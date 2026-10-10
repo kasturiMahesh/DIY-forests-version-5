@@ -46,7 +46,6 @@ header.site{position:sticky; top:0; z-index:80; background:var(--header-bg); bac
 .nav-row{display:flex; align-items:center; justify-content:space-between; height:74px;}
 .brand{display:flex; align-items:center; gap:.6em; font-family:'Fraunces',serif; font-weight:600; font-size:1.2rem; text-decoration:none; color:var(--ink);}
 .brand-mark{width:34px; height:34px; flex-shrink:0;}
-.brand small{display:block; font-family:'Work Sans',sans-serif; font-weight:500; font-size:.62rem; letter-spacing:.04em; color:var(--ink-soft);}
 .nav-links{display:flex; gap:4px; align-items:center;}
 .nav-links a{position:relative; padding:.6em .8em; border-radius:0; font-size:.92rem; font-weight:500; text-decoration:none; color:var(--ink-soft); transition:color .2s ease;}
 .nav-links a:hover{color:var(--ink); background:transparent;}
@@ -119,18 +118,19 @@ section{padding:clamp(50px,7vw,84px) 0;}
 .course-gallery-dot.is-active{background:var(--forest);}
 .course-content{min-width:0;}
 .course-eyebrow{display:inline-block; color:var(--forest-ink); font-size:.74rem; font-weight:700; letter-spacing:.1em; margin-bottom:9px;}
-.course-content h3{font-size:clamp(1.8rem,3vw,2.5rem); line-height:1.12; color:var(--forest); margin:0 0 .35em;}
+.course-content h3, .offline-feature h2{font-size:clamp(1.8rem,3vw,2.5rem); line-height:1.12; color:var(--forest); margin:0 0 .35em;}
+.course-intro{font-size:1rem; line-height:1.55; margin:0 0 10px;}
 .course-description{font-size:1rem; line-height:1.55; margin:0 0 18px;}
 .course-facts{display:grid; gap:5px; margin:0 0 16px; color:var(--ink); font-size:.92rem;}
-.course-suitable{font-size:.9rem; line-height:1.5; margin:0 0 18px;}
+.course-suitable{font-size:1rem; line-height:1.5; margin:0 0 18px;}
 .course-suitable strong{display:block; font-size:.78rem; color:var(--ink); margin-bottom:2px;}
 .course-price{font-family:'Fraunces',Georgia,serif; font-size:2rem; line-height:1.1; font-weight:600; color:var(--forest); margin:0 0 18px;}
 .course-actions{display:flex; flex-wrap:wrap; gap:10px;}
-.course-actions .btn{min-height:48px;}
+.course-actions .btn, #offlineEnrollBtn{min-height:48px;}
 @media (max-width:680px){.featured-training{grid-template-columns:1fr; gap:22px;}}
 @media (max-width:480px){.course-actions{display:grid; grid-template-columns:1fr;}.course-actions .btn{width:100%;}}
 .includes-list{list-style:none; margin:0 0 1.2em; padding:0; display:flex; flex-direction:column; gap:7px;}
-.includes-list li{display:flex; gap:8px; font-size:.85rem; color:var(--ink-soft); align-items:flex-start;}
+.includes-list li{display:flex; gap:8px; font-size:.92rem; color:var(--ink-soft); align-items:flex-start;}
 .includes-list svg{width:15px; height:15px; flex-shrink:0; margin-top:2px; color:var(--forest-ink);}
 .price{font-family:'Fraunces',serif; font-weight:600; font-size:1.3rem; color:var(--forest);}
 
@@ -138,8 +138,7 @@ section{padding:clamp(50px,7vw,84px) 0;}
 .offline-feature{background:var(--secondary); color:var(--ink); border-radius:12px; padding:clamp(28px,4vw,46px); display:grid; grid-template-columns:1fr 1fr; gap:clamp(24px,4vw,50px); align-items:center; position:relative; overflow:hidden; margin-top:26px; box-shadow:none; border:1px solid var(--line);}
 .offline-feature::before{content:""; position:absolute; inset:0; background:rgba(165,100,75,.04); pointer-events:none;}
 .offline-feature > *{position:relative;}
-.offline-feature h3, .offline-feature h2{color:var(--forest);}
-.offline-feature p{color:var(--ink-soft);}
+.offline-feature p{font-size:1rem; line-height:1.55; color:var(--ink-soft);}
 @media (max-width:860px){.offline-feature{grid-template-columns:1fr;}}
 .offline-art{aspect-ratio:4/3; border-radius:10px; overflow:hidden; border:1px solid var(--line); box-shadow:none; position:relative; background:var(--secondary); touch-action:pan-y;}
 .offline-art img{position:absolute; inset:0; width:100%; height:100%; object-fit:cover; opacity:1; transition:opacity .24s ease;}
@@ -150,10 +149,10 @@ section{padding:clamp(50px,7vw,84px) 0;}
 .offline-gallery-dots{position:absolute; left:50%; bottom:12px; transform:translateX(-50%); display:flex; align-items:center; gap:8px; padding:8px 11px; border:1px solid var(--line); border-radius:999px; background:var(--bg-raised); z-index:1;}
 .offline-gallery-dot{width:8px; height:8px; border:0; border-radius:50%; padding:0; background:var(--line); cursor:pointer;}
 .offline-gallery-dot.is-active{background:var(--forest);}
-.offline-tag{display:inline-block; font-size:.75rem; font-weight:700; letter-spacing:.03em; color:var(--forest-ink); background:var(--surface); padding:.4em .9em; border-radius:999px; margin-bottom:1em; border:1px solid var(--line);}
+.offline-tag{display:inline-block; font-size:.78rem; font-weight:700; letter-spacing:.1em; color:var(--forest-ink); background:var(--surface); padding:.4em .9em; border-radius:999px; margin-bottom:1em; border:1px solid var(--line);}
 .offline-price-row{display:flex; align-items:baseline; gap:8px; margin:1em 0 1.4em;}
-.offline-price-row .price{color:var(--forest); font-size:2rem;}
-.offline-price-row span.per{font-size:.85rem; color:var(--ink-soft);}
+.offline-price-row .price{color:var(--forest); font-size:2rem; line-height:1.1;}
+.offline-price-row span.per{font-size:.92rem; color:var(--ink-soft);}
 
 /* ---- Webinar banner ---- */
 .webinar-banner{background:var(--secondary); border:1px solid var(--line); border-radius:12px; padding:clamp(24px,4vw,40px); display:grid; grid-template-columns:minmax(0,1fr) auto; gap:clamp(18px,3vw,32px); align-items:center; box-shadow:none; color:var(--ink); transition:border-color .2s ease;}
@@ -311,6 +310,7 @@ footer.site a:hover{color:var(--on-forest);}
 .trainee-project-journey{margin-top:20px;}
 .trainee-project-journey > h3{font-family:'Fraunces',Georgia,serif; font-size:1.35rem; margin-bottom:12px;}
 .trainee-project-galleries{display:grid; grid-template-columns:minmax(0,1fr); gap:24px;}
+.trainee-project-galleries.static-pair{grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px;}
 .trainee-gallery-section{min-width:0;}
 .trainee-gallery-section h4{font-size:.92rem; color:var(--forest); margin:0 0 4px;}
 .trainee-gallery-section > p{font-size:.78rem; line-height:1.45; margin:0 0 9px;}
@@ -330,7 +330,7 @@ footer.site a:hover{color:var(--on-forest);}
 .trainee-profile-links a{color:var(--forest-ink); font-size:.84rem; font-weight:700; text-decoration:none;}
 .trainee-profile-links a:hover{text-decoration:underline; text-underline-offset:3px;}
 body.trainee-modal-open{overflow:hidden;}
-@media(max-width:600px){.modal.trainee-profile-modal{padding:16px;}.trainee-profile-head{grid-template-columns:86px minmax(0,1fr); gap:13px; padding:0 44px 18px 0; align-items:start;}.trainee-profile-photo{width:86px;}.trainee-project-galleries{grid-template-columns:1fr; gap:20px;}.trainee-project-intro{margin:15px 0 18px;}}
+@media(max-width:600px){.modal.trainee-profile-modal{padding:16px;}.trainee-profile-head{grid-template-columns:86px minmax(0,1fr); gap:13px; padding:0 44px 18px 0; align-items:start;}.trainee-profile-photo{width:86px;}.trainee-project-galleries{grid-template-columns:1fr; gap:20px;}.trainee-project-galleries.static-pair{grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px;}.trainee-project-intro{margin:15px 0 18px;}}
 .modal h3{margin-bottom:.2em;}
 .modal .close-x{float:right; margin-top:-6px;}
 .order-line{display:flex; justify-content:space-between; font-size:.86rem; padding:8px 0; border-bottom:1px dashed var(--line);}
@@ -360,7 +360,7 @@ body.trainee-modal-open{overflow:hidden;}
   <div class="wrap nav-row">
     <a href="#top" class="brand">
       <svg class="brand-mark" viewBox="0 0 40 40" fill="none"><circle cx="20" cy="20" r="20" fill="var(--forest)"/><path d="M20 30V19M20 19C15 19 12 15 12 10C17 10 20 13 20 17C20 13 23 10 28 10C28 15 25 19 20 19Z" stroke="var(--on-forest)" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/></svg>
-      <span>DIY Forests<br><small>BY SHUBHENDU SHARMA</small></span>
+      <span>DIY Forests</span>
     </a>
     <nav class="nav-links" id="navLinks">
       <a href="#trainings" data-section="trainings">Trainings</a>
@@ -459,10 +459,6 @@ body.trainee-modal-open{overflow:hidden;}
 <!-- ============ TRAININGS ============ -->
 <section id="trainings">
   <div class="wrap">
-    <div class="section-head">
-      <div><span class="section-tag">Live online training</span><h2>Go deeper with the Miyawaki Method</h2></div>
-      <p style="margin:0; max-width:38ch;">A complete live training to understand the method and learn how to create a native forest from start to finish.</p>
-    </div>
     <div class="featured-training" id="trainingGrid"></div>
 
     <!-- Offline workshop feature card -->
@@ -562,7 +558,7 @@ body.trainee-modal-open{overflow:hidden;}
     <div>
       <div class="brand" style="color:var(--on-forest); margin-bottom:14px;">
         <svg class="brand-mark" viewBox="0 0 40 40" fill="none"><circle cx="20" cy="20" r="20" fill="var(--bg-raised)"/><path d="M20 30V19M20 19C15 19 12 15 12 10C17 10 20 13 20 17C20 13 23 10 28 10C28 15 25 19 20 19Z" stroke="var(--forest)" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/></svg>
-        <span style="color:var(--on-forest);">DIY Forests<br><small style="color:var(--footer-muted);">AN AFFORESTT INITIATIVE</small></span>
+        <span style="color:var(--on-forest);">DIY Forests<br><small style="color:var(--footer-muted);">BY SHUBHENDU SHARMA</small></span>
       </div>
       <p>DIY Forests is the training platform from Afforestt, who have been growing native forests using the Miyawaki method since 2011, founded by Shubhendu Sharma. Headquartered in Kashipur, Uttarakhand — our mission is to bring back lost native forests.</p>
     </div>
@@ -639,12 +635,11 @@ body.trainee-modal-open{overflow:hidden;}
       includes:["Live 4-hour session covering soil, species and layout","Worked example using a real site plan","Certificate of participation"]},
     { id:"indepth", title:"Online Training", tagline:"Know everything about the Method — spread over 2 days.", duration:"8 hours · 2 days", price:500, currency:"USD",
       c1:"#493631", c2:"#A5644B", c3:"#D3A080", icon:"book",
-      image:"https://afforestt.com/wp-content/uploads/2026/01/Project2-1024x696.webp", imageAlt:"Afforestt linear urban forest project in Springfield, Massachusetts",
+      image:"./WhatsApp%20Image%202026-10-07%20at%204.41.13%20PM.jpeg", imageAlt:"Native forest growth from initial planting to a mature site",
       images:[
         {src:"./carousel-first-image.png",alt:"Participants learning in the field during a forest restoration training"},
         {src:"./WhatsApp%20Image%202026-10-07%20at%204.41.13%20PM%20(1).jpeg",alt:"Dense native forest with more than 20,000 seedlings"},
-        {src:"./WhatsApp%20Image%202026-10-07%20at%204.41.13%20PM.jpeg",alt:"Native forest growth from initial planting to a mature site"},
-        {src:"https://afforestt.com/wp-content/uploads/2026/01/Project2-1024x696.webp",alt:"Afforestt linear urban forest project in Springfield, Massachusetts"}
+        {src:"./WhatsApp%20Image%202026-10-07%20at%204.41.13%20PM.jpeg",alt:"Native forest growth from initial planting to a mature site"}
       ],
       audience:"Anyone who wants to know the full method, start to finish.",
       learn:["Soil science in depth","Full species-selection process","Site design and planning","How to guide others through the method"],
@@ -688,7 +683,7 @@ body.trainee-modal-open{overflow:hidden;}
       '</div>'+
     '</div>'+
     '<div class="course-content">'+
-      '<h3>'+featuredTraining.title+'</h3><p class="course-description">'+featuredTraining.tagline+'</p>'+
+      '<h3>'+featuredTraining.title+'</h3><p class="course-intro">A complete live training to understand the method and learn how to create a native forest from start to finish.</p><p class="course-description">'+featuredTraining.tagline+'</p>'+
       '<div class="course-facts"><span>'+featuredTraining.duration+'</span><span>Live online · Friday evenings</span></div>'+
       '<p class="course-suitable"><strong>Suitable for</strong>'+featuredTraining.audience+'</p>'+
       '<p class="course-price">'+money(featuredTraining.price,featuredTraining.currency)+'</p>'+
@@ -878,11 +873,15 @@ body.trainee-modal-open{overflow:hidden;}
   var traineeModalReturnFocus = null;
   function openTraineeProfile(trainee,trigger){
     var traineeName = escapeTraineeHtml(trainee.name);
+    var staticImagePair = trainee.name === "Tancy Arron-Walker";
+    var beforeImages = staticImagePair ? trainee.beforePlantingImages.slice(0,1) : trainee.beforePlantingImages;
+    var afterImages = staticImagePair ? trainee.afterPlantingImages.slice(0,1) : trainee.afterPlantingImages;
     var projectHtml = trainee.project ? '<p class="trainee-profile-project"><strong>'+escapeTraineeHtml(trainee.projectLabel || "Project")+':</strong> '+escapeTraineeHtml(trainee.project)+'</p>' : "";
     var introHtml = trainee.projectIntro ? '<section class="trainee-project-intro"><h3>About the Project</h3><p>'+escapeTraineeHtml(trainee.projectIntro)+'</p></section>' : "";
-    var beforeHtml = traineeGalleryMarkup("traineeBefore","Before Planting","See the site before the planting work began.",trainee.beforePlantingImages);
-    var afterHtml = traineeGalleryMarkup("traineeAfter","After Planting","See how the site developed after planting.",trainee.afterPlantingImages);
-    var journeyHtml = beforeHtml || afterHtml ? '<section class="trainee-project-journey" aria-labelledby="traineeJourneyHeading"><h3 id="traineeJourneyHeading">Project Journey</h3><div class="trainee-project-galleries">'+beforeHtml+afterHtml+'</div></section>' : "";
+    var beforeHtml = traineeGalleryMarkup("traineeBefore","Before Planting","See the site before the planting work began.",beforeImages);
+    var afterHtml = traineeGalleryMarkup("traineeAfter","After Planting","See how the site developed after planting.",afterImages);
+    var galleryLayoutClass = staticImagePair ? " static-pair" : "";
+    var journeyHtml = beforeHtml || afterHtml ? '<section class="trainee-project-journey" aria-labelledby="traineeJourneyHeading"><h3 id="traineeJourneyHeading">Project Journey</h3><div class="trainee-project-galleries'+galleryLayoutClass+'">'+beforeHtml+afterHtml+'</div></section>' : "";
     var linksHtml = (trainee.links || []).map(function(link){
       return '<a href="'+escapeTraineeHtml(link.url)+'" target="_blank" rel="noopener noreferrer">'+escapeTraineeHtml(link.label)+' &rarr;</a>';
     }).join("");
@@ -899,8 +898,8 @@ body.trainee-modal-open{overflow:hidden;}
     modalBody.setAttribute("aria-labelledby","traineeProfileTitle");
     document.body.classList.add("trainee-modal-open");
     document.getElementById("traineeProfileClose").addEventListener("click",closeModal);
-    initializeTraineeGallery("traineeBefore","Before Planting",trainee.beforePlantingImages,trainee.name);
-    initializeTraineeGallery("traineeAfter","After Planting",trainee.afterPlantingImages,trainee.name);
+    initializeTraineeGallery("traineeBefore","Before Planting",beforeImages,trainee.name);
+    initializeTraineeGallery("traineeAfter","After Planting",afterImages,trainee.name);
     document.getElementById("traineeProfileClose").focus();
   }
   var traineeTrack = document.getElementById("traineeTrack");
