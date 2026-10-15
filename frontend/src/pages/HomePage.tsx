@@ -1,0 +1,926 @@
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
+import homeCss from '../styles/home.css?inline'
+import {
+  OFFLINE, PROGRAMS, REVIEWS, TRAINEES, TRAININGS, addDays, fmtRange, fmtShort, money, nextWeekdayDates,
+  type Art, type Currency, type Trainee, type Training,
+} from '../data'
+import { formatWebinarDateTime, getWebinarCountdown, webinar } from '../webinarData'
+
+/* ---------------- Icons (same paths as the original page) ---------------- */
+const CheckIconSm = () => <svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+const CartIconSm = () => <svg viewBox="0 0 24 24" fill="none"><path d="M3 4h2l2.4 12.2a2 2 0 0 0 2 1.6h7.6a2 2 0 0 0 2-1.6L21 8H6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
+const CloseIcon = () => <svg viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
+const ChevronLeft = ({ width = '2' }: { width?: string }) => <svg viewBox="0 0 24 24" fill="none"><path d="M15 18l-6-6 6-6" stroke="currentColor" strokeWidth={width} strokeLinecap="round" strokeLinejoin="round" /></svg>
+const ChevronRight = ({ width = '2' }: { width?: string }) => <svg viewBox="0 0 24 24" fill="none"><path d="M9 18l6-6-6-6" stroke="currentColor" strokeWidth={width} strokeLinecap="round" strokeLinejoin="round" /></svg>
+const STAR_PATH = 'M10 1l2.6 5.9 6.4.6-4.8 4.3 1.4 6.2L10 14.9 4.4 18l1.4-6.2L1 7.5l6.4-.6L10 1z'
+const BrandMark = ({ fill, stroke }: { fill: string; stroke: string }) => (
+  <svg className="brand-mark" viewBox="0 0 40 40" fill="none"><circle cx="20" cy="20" r="20" fill={fill} /><path d="M20 30V19M20 19C15 19 12 15 12 10C17 10 20 13 20 17C20 13 23 10 28 10C28 15 25 19 20 19Z" stroke={stroke} strokeWidth="1.8" strokeLinejoin="round" strokeLinecap="round" /></svg>
+)
+const ArtImage = ({ art }: { art: Art }) => <img src={art.src} alt={art.alt} loading="lazy" decoding="async" />
+
+const PAY_METHODS = [
+  { id: 'upi', label: 'UPI', icon: <svg viewBox="0 0 24 24" fill="none"><path d="M4 12h16M4 6h16M4 18h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg> },
+  { id: 'card', label: 'Card', icon: <svg viewBox="0 0 24 24" fill="none"><rect x="3" y="6" width="18" height="13" rx="2" stroke="currentColor" strokeWidth="1.8" /><path d="M3 10h18" stroke="currentColor" strokeWidth="1.8" /></svg> },
+  { id: 'netbanking', label: 'Netbanking', icon: <svg viewBox="0 0 24 24" fill="none"><path d="M4 10l8-6 8 6M5 10v9h14v-9M10 19v-6h4v6" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" /></svg> },
+]
+
+const NAV_ITEMS = [
+  ['trainings', 'Trainings'], ['how-it-works', 'How It Works'], ['offline', 'Offline Workshop'], ['webinar', 'Webinar'],
+  ['trainees', 'Trainees'], ['programs', 'Projects'], ['reviews', 'Reviews'],
+] as const
+
+const reduceMotion = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+
+/* ---------------- Cart state ---------------- */
+type CartItem = { cartId: string; title: string; price: number; currency: Currency; meta: string; art: Art }
+const CART_KEY = 'afforestt_training_cart_v1'
+const SEATS_KEY = 'afforestt_webinar_seats_v1'
+const SEATS_TOTAL = 40
+
+function loadCart(): CartItem[] {
+  try {
+    const raw = localStorage.getItem(CART_KEY)
+    const items = raw ? JSON.parse(raw) : []
+    if (!Array.isArray(items)) return []
+    return items.map((item) => {
+      // The static page stored `art` as an HTML string; accept that shape too.
+      if (typeof item.art === 'string') {
+        const src = /src="([^"]*)"/.exec(item.art)?.[1] ?? ''
+        const alt = /alt="([^"]*)"/.exec(item.art)?.[1] ?? ''
+        return { ...item, currency: item.currency || 'INR', art: { src, alt } }
+      }
+      return { ...item, currency: item.currency || 'INR' }
+    })
+  } catch {
+    return []
+  }
+}
+
+function cartTotals(items: CartItem[]) {
+  const totals: { currency: Currency; subtotal: number; gst: number; total: number }[] = []
+  items.forEach((item) => {
+    let group = totals.find((entry) => entry.currency === item.currency)
+    if (!group) {
+      group = { currency: item.currency, subtotal: 0, gst: 0, total: 0 }
+      totals.push(group)
+    }
+    group.subtotal += item.price
+  })
+  totals.forEach((group) => {
+    group.gst = Math.round(group.subtotal * 0.18)
+    group.total = group.subtotal + group.gst
+  })
+  return totals
+}
+
+function formatCartTotals(totals: ReturnType<typeof cartTotals>, key: 'subtotal' | 'gst' | 'total') {
+  return totals.map((group) => (totals.length > 1 ? `${group.currency} ${money(group[key], group.currency)}` : money(group[key], group.currency))).join(' · ')
+}
+
+type ModalState =
+  | { kind: 'training'; training: Training }
+  | { kind: 'offline' }
+  | { kind: 'checkout' }
+  | { kind: 'success'; name: string; count: number }
+  | { kind: 'trainee'; trainee: Trainee; trigger: HTMLElement | null }
+  | null
+
+/* ---------------- Sections ---------------- */
+function CourseGallery({ images }: { images: Art[] }) {
+  const [index, setIndex] = useState(0)
+  const show = (next: number) => setIndex((next + images.length) % images.length)
+  return (
+    <div className="course-gallery" aria-label="In-depth Training images">
+      <img id="courseGalleryImage" src={images[index].src} alt={images[index].alt} fetchPriority="high" decoding="async" />
+      <div className="course-gallery-controls">
+        <button className="course-gallery-arrow" id="courseGalleryPrev" aria-label="Previous image" disabled={images.length < 2} onClick={() => show(index - 1)}><ChevronLeft width="1.8" /></button>
+        <div className="course-gallery-dots" id="courseGalleryDots" aria-label="Image pagination">
+          {images.map((image, i) => <button key={image.src} className={`course-gallery-dot${i === index ? ' is-active' : ''}`} aria-label={`Show image ${i + 1}`} data-index={i} onClick={() => show(i)} />)}
+        </div>
+        <button className="course-gallery-arrow" id="courseGalleryNext" aria-label="Next image" disabled={images.length < 2} onClick={() => show(index + 1)}><ChevronRight width="1.8" /></button>
+      </div>
+    </div>
+  )
+}
+
+function OfflineGallery() {
+  const images = OFFLINE.images
+  const [index, setIndex] = useState(0)
+  const [visible, setVisible] = useState(true)
+  const imageRef = useRef<HTMLImageElement>(null)
+  const swipeStart = useRef<number | null>(null)
+  const show = (next: number) => {
+    setVisible(false)
+    setIndex((next + images.length) % images.length)
+  }
+  useLayoutEffect(() => {
+    if (imageRef.current?.complete) setVisible(true)
+  }, [index])
+  return (
+    <div
+      className="offline-art"
+      id="offlineArt"
+      onTouchStart={(event) => { swipeStart.current = event.changedTouches[0].clientX }}
+      onTouchEnd={(event) => {
+        if (swipeStart.current === null) return
+        const delta = event.changedTouches[0].clientX - swipeStart.current
+        if (Math.abs(delta) > 40) show(index + (delta < 0 ? 1 : -1))
+        swipeStart.current = null
+      }}
+    >
+      <img ref={imageRef} id="offlineGalleryImage" src={images[index].src} alt={images[index].alt} decoding="async" style={{ opacity: visible ? 1 : 0 }} onLoad={() => setVisible(true)} onError={() => setVisible(true)} />
+      <button className="offline-gallery-arrow prev" id="offlineGalleryPrev" type="button" aria-label="Previous workshop image" onClick={() => show(index - 1)}>←</button>
+      <button className="offline-gallery-arrow next" id="offlineGalleryNext" type="button" aria-label="Next workshop image" onClick={() => show(index + 1)}>→</button>
+      <div className="offline-gallery-dots" id="offlineGalleryDots" role="group" aria-label="Choose a workshop image">
+        {images.map((image, i) => <button key={image.src} className={`offline-gallery-dot${i === index ? ' is-active' : ''}`} type="button" aria-label={`Show workshop image ${i + 1}`} aria-current={i === index ? 'true' : 'false'} data-index={i} onClick={() => show(i)} />)}
+      </div>
+    </div>
+  )
+}
+
+function WebinarCountdown() {
+  const [now, setNow] = useState(() => new Date())
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+  const countdown = getWebinarCountdown(now)
+  if (countdown.complete) return <div className="webinar-countdown-status" id="homeWebinarCountdown" aria-label="Time until the webinar" aria-live="off">Webinar starting soon</div>
+  const units: [number, string][] = [[countdown.days, 'DAYS'], [countdown.hours, 'HOURS'], [countdown.minutes, 'MINUTES'], [countdown.seconds, 'SECONDS']]
+  return (
+    <div className="webinar-countdown" id="homeWebinarCountdown" aria-label="Time until the webinar" aria-live="off">
+      {units.map(([value, label]) => <span key={label} className="webinar-countdown-item"><strong>{String(value).padStart(2, '0')}</strong><span>{label}</span></span>)}
+    </div>
+  )
+}
+
+/** Mouse drag-to-scroll used by the original carousels. */
+function useDragScroll(ref: RefObject<HTMLDivElement | null>, options: { ignoreTouch: boolean; threshold: number }) {
+  useEffect(() => {
+    const track = ref.current
+    if (!track) return
+    let isDown = false
+    let isDragging = false
+    let startX = 0
+    let scrollStart = 0
+    const down = (event: PointerEvent) => {
+      if (options.ignoreTouch && event.pointerType === 'touch') return
+      isDown = true
+      isDragging = false
+      startX = event.clientX
+      scrollStart = track.scrollLeft
+      if (options.threshold === 0) {
+        isDragging = true
+        track.classList.add('dragging')
+        track.setPointerCapture(event.pointerId)
+      }
+    }
+    const move = (event: PointerEvent) => {
+      if (!isDown) return
+      if (!isDragging && Math.abs(event.clientX - startX) > options.threshold) {
+        isDragging = true
+        track.classList.add('dragging')
+        track.setPointerCapture(event.pointerId)
+      }
+      if (isDragging) track.scrollLeft = scrollStart - (event.clientX - startX)
+    }
+    const up = () => {
+      isDown = false
+      isDragging = false
+      track.classList.remove('dragging')
+    }
+    track.addEventListener('pointerdown', down)
+    track.addEventListener('pointermove', move)
+    const ends = ['pointerup', 'pointerleave', 'pointercancel'] as const
+    ends.forEach((name) => track.addEventListener(name, up))
+    return () => {
+      track.removeEventListener('pointerdown', down)
+      track.removeEventListener('pointermove', move)
+      ends.forEach((name) => track.removeEventListener(name, up))
+    }
+  }, [ref, options.ignoreTouch, options.threshold])
+}
+
+function ProgramsCarousel() {
+  const track = useRef<HTMLDivElement>(null)
+  const [active, setActive] = useState(0)
+  // The original captures the pointer immediately on pointerdown. That
+  // retargets clicks to the track, so links inside slides never open with a
+  // mouse. A small threshold keeps drag-to-scroll and leaves links working.
+  useDragScroll(track, { ignoreTouch: false, threshold: 5 })
+  const updateDots = () => window.requestAnimationFrame(() => {
+    const element = track.current
+    if (!element) return
+    const center = element.scrollLeft + element.clientWidth / 2
+    let closest = 0
+    let closestDist = Infinity
+    Array.from(element.children).forEach((child, i) => {
+      const slide = child as HTMLElement
+      const dist = Math.abs(slide.offsetLeft + slide.offsetWidth / 2 - center)
+      if (dist < closestDist) { closestDist = dist; closest = i }
+    })
+    setActive(closest)
+  })
+  return (
+    <div className="carousel-shell">
+      <div className="carousel-track overflow-x" id="programTrack" ref={track} onScroll={updateDots}>
+        {PROGRAMS.map((program) => (
+          <div className="program-slide" key={program.title}>
+            <div className="program-art"><a href={program.url} target="_blank" rel="noopener noreferrer"><ArtImage art={{ src: program.image, alt: program.imageAlt }} /></a></div>
+            <div className="program-body"><span className="loc">{program.loc.toUpperCase()}</span><h3>{program.title}</h3><p>{program.desc}</p><a className="program-link" href={program.url} target="_blank" rel="noopener noreferrer">Read project story</a></div>
+          </div>
+        ))}
+      </div>
+      <div className="carousel-controls">
+        <div className="carousel-dots" id="programDots">
+          {PROGRAMS.map((program, i) => <button key={program.title} className={i === active ? 'is-active' : ''} aria-label={`Go to slide ${i + 1}`} onClick={() => {
+            const slide = track.current?.children[i] as HTMLElement | undefined
+            if (slide) track.current?.scrollTo({ left: slide.offsetLeft - 4, behavior: 'smooth' })
+          }} />)}
+        </div>
+        <div className="carousel-nav">
+          <button id="progPrev" aria-label="Previous" onClick={() => track.current?.scrollBy({ left: -340, behavior: 'smooth' })}><ChevronLeft /></button>
+          <button id="progNext" aria-label="Next" onClick={() => track.current?.scrollBy({ left: 340, behavior: 'smooth' })}><ChevronRight /></button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function TraineesCarousel({ onOpen }: { onOpen: (trainee: Trainee, trigger: HTMLElement) => void }) {
+  const track = useRef<HTMLDivElement>(null)
+  const [selected, setSelected] = useState(0)
+  const [activeDot, setActiveDot] = useState(0)
+  const [dotsTouched, setDotsTouched] = useState(false)
+  useDragScroll(track, { ignoreTouch: true, threshold: 5 })
+
+  const nearestIndex = () => {
+    const element = track.current
+    if (!element) return 0
+    let closest = 0
+    let distance = Infinity
+    Array.from(element.children).forEach((child, i) => {
+      const current = Math.abs((child as HTMLElement).offsetLeft - element.offsetLeft - element.scrollLeft)
+      if (current < distance) { distance = current; closest = i }
+    })
+    return closest
+  }
+  const updateDots = (index: number) => {
+    setDotsTouched(true)
+    setActiveDot(index)
+  }
+  const scrollToTrainee = (index: number) => {
+    const element = track.current
+    const card = element?.children[index] as HTMLElement | undefined
+    if (!element || !card) return
+    element.scrollTo({ left: card.offsetLeft - element.offsetLeft, behavior: reduceMotion ? 'auto' : 'smooth' })
+    setSelected(index)
+    updateDots(index)
+  }
+
+  return (
+    <div className="carousel-shell">
+      <div className="trainee-track" id="traineeTrack" aria-label="Trainee profiles" ref={track} onScroll={() => window.requestAnimationFrame(() => updateDots(nearestIndex()))}>
+        {TRAINEES.map((trainee, i) => {
+          const location = trainee.project || (trainee.city ? trainee.city + (trainee.country ? `, ${trainee.country}` : '') : '')
+          return (
+            <button key={trainee.name} type="button" className={`trainee-card${i === selected ? ' is-selected' : ''}`} aria-pressed={i === selected ? 'true' : 'false'} aria-label={`View profile: ${trainee.name}`} onClick={(event) => {
+              const card = event.currentTarget
+              setSelected(i)
+              card.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'nearest', inline: 'nearest' })
+              updateDots(i)
+              onOpen(trainee, card)
+            }}>
+              <div className="trainee-photo">
+                <img src={trainee.image} alt={trainee.imageAlt || `Sample profile photo for ${trainee.name}`} loading="lazy" />
+                {trainee.demo ? <span className="demo-label">DEMO PROFILE · SAMPLE PHOTO</span> : null}
+              </div>
+              <div className="trainee-body"><h3>{trainee.name}</h3><p className="trainee-location">{location}</p><p className="trainee-role">{trainee.type || trainee.role}</p></div>
+            </button>
+          )
+        })}
+      </div>
+      <div className="carousel-controls trainee-controls">
+        <div className="carousel-dots" id="traineeDots" aria-label="Choose a trainee">
+          {TRAINEES.map((trainee, i) => <button key={trainee.name} type="button" className={i === activeDot ? 'is-active' : ''} aria-label={`Show demo trainee ${i + 1}`} aria-current={dotsTouched ? (i === activeDot ? 'true' : 'false') : undefined} onClick={() => scrollToTrainee(i)} />)}
+        </div>
+        <div className="carousel-nav">
+          <button className="trainee-nav-btn" id="traineePrev" aria-label="Previous trainee" onClick={() => scrollToTrainee(Math.max(0, nearestIndex() - 1))}><ChevronLeft /><span>Previous</span></button>
+          <button className="trainee-nav-btn" id="traineeNext" aria-label="Next trainee" onClick={() => scrollToTrainee(Math.min(TRAINEES.length - 1, nearestIndex() + 1))}><span>Next</span><ChevronRight /></button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ---------------- Modal bodies ---------------- */
+function DateChipModal({ heading, art, intro, chips, chipLabel, emptyLabel, addLabel, onClose, onAdd, children }: {
+  heading: string
+  art: Art
+  intro: ReactNode
+  chips: { label: string; small: string }[]
+  chipLabel: string
+  emptyLabel: string
+  addLabel: string
+  onClose: () => void
+  onAdd: (index: number) => void
+  children?: ReactNode
+}) {
+  const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
+  return (
+    <>
+      <button className="icon-btn close-x" aria-label="Close" onClick={onClose}><CloseIcon /></button>
+      <div style={{ borderRadius: 14, overflow: 'hidden', marginBottom: 16 }}><ArtImage art={art} /></div>
+      <h3>{heading}</h3>{intro}
+      {children}
+      <p style={{ fontSize: '.82rem', fontWeight: 600, color: 'var(--ink)', marginBottom: 6 }}>{chipLabel}</p>
+      <div className="date-chip-grid">
+        {chips.map((chip, i) => <button key={chip.label} className={`chip-date${selectedIdx === i ? ' is-selected' : ''}`} data-idx={i} onClick={() => setSelectedIdx(i)}>{chip.label}<small>{chip.small}</small></button>)}
+      </div>
+      <button className="btn btn-primary btn-block" disabled={selectedIdx === null} onClick={() => { if (selectedIdx !== null) onAdd(selectedIdx) }}>
+        {selectedIdx === null ? emptyLabel : <><CartIconSm /> {addLabel}</>}
+      </button>
+    </>
+  )
+}
+
+function TraineeGallery({ id, title, description, images, traineeName }: { id: string; title: string; description: string; images: string[]; traineeName: string }) {
+  const [index, setIndex] = useState(0)
+  const touchStart = useRef<number | null>(null)
+  const show = (next: number) => setIndex((next + images.length) % images.length)
+  const alt = index === 0 ? `${title} image 1` : `${traineeName} — ${title.toLowerCase()} image ${index + 1}`
+  return (
+    <section className="trainee-gallery-section" aria-labelledby={`${id}Heading`}>
+      <h4 id={`${id}Heading`}>{title}</h4><p>{description}</p>
+      <div
+        className="trainee-gallery-frame" id={`${id}Frame`} data-gallery-frame={id}
+        onPointerDown={(event) => {
+          if (images.length < 2 || event.pointerType !== 'touch') return
+          touchStart.current = event.clientX
+          event.currentTarget.setPointerCapture(event.pointerId)
+        }}
+        onPointerUp={(event) => {
+          if (touchStart.current === null) return
+          const distance = event.clientX - touchStart.current
+          touchStart.current = null
+          if (Math.abs(distance) > 45) show(index + (distance < 0 ? 1 : -1))
+        }}
+        onPointerCancel={() => { touchStart.current = null }}
+      >
+        <img src={images[index]} alt={alt} decoding="async" />
+      </div>
+      {images.length > 1 ? (
+        <div className="trainee-gallery-controls">
+          <button className="trainee-gallery-arrow" type="button" aria-label="Previous image" onClick={() => show(index - 1)}><ChevronLeft width="1.8" /></button>
+          <div className="trainee-gallery-pagination">
+            <span className="trainee-gallery-count" aria-live="polite">{index + 1} / {images.length}</span>
+            <div className="trainee-gallery-dots" role="group" aria-label={`${title} images`}>
+              {images.map((image, i) => <button key={image} className={`trainee-gallery-dot${i === index ? ' is-active' : ''}`} type="button" aria-label={`Show ${title} image ${i + 1}`} aria-current={i === index ? 'true' : 'false'} onClick={() => show(i)} />)}
+            </div>
+          </div>
+          <button className="trainee-gallery-arrow" type="button" aria-label="Next image" onClick={() => show(index + 1)}><ChevronRight width="1.8" /></button>
+        </div>
+      ) : <div className="trainee-gallery-controls" hidden />}
+    </section>
+  )
+}
+
+function TraineeProfile({ trainee, onClose }: { trainee: Trainee; onClose: () => void }) {
+  const closeRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => { closeRef.current?.focus() }, [])
+  const staticImagePair = trainee.name === 'Tancy Arron-Walker'
+  const beforeImages = (staticImagePair ? trainee.beforePlantingImages?.slice(0, 1) : trainee.beforePlantingImages) ?? []
+  const afterImages = (staticImagePair ? trainee.afterPlantingImages?.slice(0, 1) : trainee.afterPlantingImages) ?? []
+  return (
+    <>
+      <button ref={closeRef} className="icon-btn close-x" id="traineeProfileClose" type="button" aria-label="Close trainee profile" onClick={onClose}><CloseIcon /></button>
+      <header className="trainee-profile-head">
+        <img className="trainee-profile-photo" src={trainee.image} alt={trainee.imageAlt || trainee.name} decoding="async" />
+        <div className="trainee-profile-heading">
+          <h2 id="traineeProfileTitle">{trainee.name}</h2>
+          <p className="trainee-profile-type">{trainee.type || trainee.role}</p>
+          {trainee.project ? <p className="trainee-profile-project"><strong>{trainee.projectLabel || 'Project'}:</strong> {trainee.project}</p> : null}
+        </div>
+      </header>
+      {trainee.projectIntro ? <section className="trainee-project-intro"><h3>About the Project</h3><p>{trainee.projectIntro}</p></section> : null}
+      {beforeImages.length || afterImages.length ? (
+        <section className="trainee-project-journey" aria-labelledby="traineeJourneyHeading">
+          <h3 id="traineeJourneyHeading">Project Journey</h3>
+          <div className={`trainee-project-galleries${staticImagePair ? ' static-pair' : ''}`}>
+            {beforeImages.length ? <TraineeGallery id="traineeBefore" title="Before Planting" description="See the site before the planting work began." images={beforeImages} traineeName={trainee.name} /> : null}
+            {afterImages.length ? <TraineeGallery id="traineeAfter" title="After Planting" description="See how the site developed after planting." images={afterImages} traineeName={trainee.name} /> : null}
+          </div>
+        </section>
+      ) : null}
+      {trainee.links?.length ? (
+        <nav className="trainee-profile-links" aria-label="Trainee links">
+          {trainee.links.map((link) => <a key={link.url} href={link.url} target="_blank" rel="noopener noreferrer">{link.label} &rarr;</a>)}
+        </nav>
+      ) : null}
+    </>
+  )
+}
+
+/* ---------------- Page ---------------- */
+type ConfettiPiece = { id: number; left: number; background: string; duration: number; radius: string }
+
+export default function HomePage() {
+  const [cart, setCart] = useState<CartItem[]>(loadCart)
+  const [cartOpen, setCartOpen] = useState(false)
+  const [cartBump, setCartBump] = useState(0)
+  const [modal, setModal] = useState<ModalState>(null)
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [activeSection, setActiveSection] = useState('')
+  const [showTop, setShowTop] = useState(false)
+  const [toast, setToast] = useState({ text: 'Added to cart', show: false })
+  const [payMethod, setPayMethod] = useState('upi')
+  const [processing, setProcessing] = useState(false)
+  const [confetti, setConfetti] = useState<ConfettiPiece[]>([])
+  const [seatsLeft, setSeatsLeft] = useState(() => {
+    try {
+      const saved = localStorage.getItem(SEATS_KEY)
+      return saved !== null ? parseInt(saved, 10) : 12
+    } catch {
+      return 12
+    }
+  })
+  const toastTimer = useRef<number | undefined>(undefined)
+  const modalBodyRef = useRef<HTMLDivElement>(null)
+  const cartBtnRef = useRef<HTMLButtonElement>(null)
+  const reserveHandled = useRef(false)
+  const confettiSeq = useRef(0)
+
+  useEffect(() => { document.title = 'DIY Forests — Trainings' }, [])
+
+  useEffect(() => {
+    try { localStorage.setItem(CART_KEY, JSON.stringify(cart)) } catch { /* storage unavailable */ }
+  }, [cart])
+
+  // Restart the cart bump animation on every add (the original toggles the class and forces reflow).
+  useLayoutEffect(() => {
+    const button = cartBtnRef.current
+    if (!button || cartBump === 0) return
+    button.classList.remove('bump')
+    void button.offsetWidth
+    button.classList.add('bump')
+  }, [cartBump])
+
+  const showToast = useCallback((text: string) => {
+    setToast({ text, show: true })
+    window.clearTimeout(toastTimer.current)
+    toastTimer.current = window.setTimeout(() => setToast((current) => ({ ...current, show: false })), 2600)
+  }, [])
+
+  const addToCart = useCallback((item: Omit<CartItem, 'cartId'>) => {
+    setCart((current) => [...current, { ...item, cartId: `c${Date.now()}${Math.random().toString(16).slice(2)}` }])
+    setCartBump((count) => count + 1)
+    showToast(`Added “${item.title}” to cart`)
+    setCartOpen(true)
+  }, [showToast])
+
+  const closeModal = useCallback(() => {
+    setModal((current) => {
+      if (current?.kind === 'trainee') {
+        const trigger = current.trigger
+        window.setTimeout(() => { if (trigger && document.contains(trigger)) trigger.focus() })
+      }
+      return null
+    })
+  }, [])
+
+  const reserveWebinar = useCallback(() => {
+    if (seatsLeft <= 0) return
+    const remaining = seatsLeft - 1
+    setSeatsLeft(remaining)
+    try { localStorage.setItem(SEATS_KEY, String(remaining)) } catch { /* storage unavailable */ }
+    addToCart({ title: webinar.title, price: webinar.price, currency: 'INR', meta: formatWebinarDateTime(webinar.date), art: { src: TRAININGS[0].image, alt: TRAININGS[0].imageAlt } })
+  }, [addToCart, seatsLeft])
+
+  // ?reserve=webinar (from the webinar page) books a seat on arrival, like the original.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    if (reserveHandled.current || params.get('reserve') !== 'webinar') return
+    reserveHandled.current = true
+    reserveWebinar()
+    // Drop the query so a refresh doesn't book a second seat.
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.hash}`)
+  }, [reserveWebinar])
+
+  // The static page scrolls to its #hash natively; React content mounts later, so do it here.
+  useEffect(() => {
+    const id = decodeURIComponent(window.location.hash.slice(1))
+    if (id) document.getElementById(id)?.scrollIntoView()
+  }, [])
+
+  // Scrollspy
+  useEffect(() => {
+    if (!('IntersectionObserver' in window)) return
+    const spy = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => { if (entry.isIntersecting) setActiveSection(entry.target.id) })
+    }, { rootMargin: '-40% 0px -50% 0px', threshold: 0 })
+    ;['trainings', 'offline', 'webinar', 'trainees', 'programs', 'reviews'].forEach((id) => {
+      const section = document.getElementById(id)
+      if (section) spy.observe(section)
+    })
+    return () => spy.disconnect()
+  }, [])
+
+  useEffect(() => {
+    const onScroll = () => setShowTop(window.scrollY > 700)
+    window.addEventListener('scroll', onScroll)
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [])
+
+  // Trainee profile: body scroll lock, Escape to close, Tab focus trap.
+  const traineeOpen = modal?.kind === 'trainee'
+  useEffect(() => {
+    if (!traineeOpen) return
+    document.body.classList.add('trainee-modal-open')
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        closeModal()
+        return
+      }
+      if (event.key !== 'Tab' || !modalBodyRef.current) return
+      const focusable = modalBodyRef.current.querySelectorAll<HTMLElement>('button:not(:disabled),a[href],[tabindex]:not([tabindex="-1"])')
+      if (!focusable.length) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.body.classList.remove('trainee-modal-open')
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [traineeOpen, closeModal])
+
+  const fireConfetti = () => {
+    if (reduceMotion) return
+    const colors = ['#493631', '#A5644B', '#D3A080', '#F7F1E4', '#C77F65']
+    const base = (confettiSeq.current += 28)
+    const pieces = Array.from({ length: 28 }, (_, i) => ({
+      id: base + i,
+      left: Math.random() * 100,
+      background: colors[Math.floor(Math.random() * colors.length)],
+      duration: 2 + Math.random() * 1.5,
+      radius: Math.random() > 0.5 ? '50%' : '2px',
+    }))
+    setConfetti((current) => [...current, ...pieces])
+    window.setTimeout(() => setConfetti((current) => current.filter((piece) => !pieces.includes(piece))), 4000)
+  }
+
+  const totals = cartTotals(cart)
+  const indepth = TRAININGS.find((training) => training.id === 'indepth')!
+  const closeCart = () => setCartOpen(false)
+
+  const renderModal = () => {
+    if (!modal) return null
+    if (modal.kind === 'training') {
+      const t = modal.training
+      const fridays = nextWeekdayDates(5, 6, 1)
+      return (
+        <DateChipModal
+          heading={t.title}
+          art={{ src: t.image, alt: t.imageAlt }}
+          intro={<><p>{t.tagline}</p><p style={{ fontSize: '.85rem' }}><strong>Suitable for:</strong> {t.audience}</p></>}
+          chips={fridays.map((date) => ({ label: fmtShort(date), small: '6:30 PM' }))}
+          chipLabel="Choose your Friday evening session"
+          emptyLabel="Select a date to continue"
+          addLabel={`Add to cart — ${money(t.price, t.currency)}`}
+          onClose={closeModal}
+          onAdd={(index) => {
+            addToCart({ title: t.title, price: t.price, currency: t.currency || 'INR', meta: `${t.duration} · ${fmtShort(fridays[index])} · 6:30 PM`, art: { src: t.image, alt: t.imageAlt } })
+            closeModal()
+          }}
+        >
+          <p style={{ fontSize: '.82rem', fontWeight: 600, color: 'var(--ink)', marginBottom: 6 }}>What you&rsquo;ll learn</p>
+          <ul className="includes-list" style={{ marginBottom: 16 }}>{t.learn.map((item) => <li key={item}><CheckIconSm /><span>{item}</span></li>)}</ul>
+          <p style={{ fontSize: '.82rem', fontWeight: 600, color: 'var(--ink)', marginBottom: 6 }}>What&rsquo;s included</p>
+          <ul className="includes-list" style={{ marginBottom: 18 }}>{t.includes.map((item) => <li key={item}><CheckIconSm /><span>{item}</span></li>)}</ul>
+        </DateChipModal>
+      )
+    }
+    if (modal.kind === 'offline') {
+      const batches = nextWeekdayDates(6, 6, 3) // Saturdays, 3 weeks apart
+      return (
+        <DateChipModal
+          heading="Offline Workshop"
+          art={{ src: OFFLINE.image, alt: OFFLINE.imageAlt }}
+          intro={<p>Pick the 5-day batch that works for you. Food and accommodation are included.</p>}
+          chips={batches.map((date) => ({ label: fmtRange(date, addDays(date, 4)), small: '5 days' }))}
+          chipLabel="Choose your batch"
+          emptyLabel="Select a batch to continue"
+          addLabel={`Add to cart — ${money(OFFLINE.price)}`}
+          onClose={closeModal}
+          onAdd={(index) => {
+            const start = batches[index]
+            addToCart({ title: 'Offline Workshop', price: OFFLINE.price, currency: 'INR', meta: `${fmtRange(start, addDays(start, 4))} · in person`, art: { src: OFFLINE.image, alt: OFFLINE.imageAlt } })
+            closeModal()
+          }}
+        />
+      )
+    }
+    if (modal.kind === 'checkout') {
+      return (
+        <>
+          <button className="icon-btn close-x" id="modalCloseBtn" aria-label="Close" onClick={closeModal}><CloseIcon /></button>
+          <h3>Order summary</h3><p style={{ marginBottom: 6 }}>Review before payment.</p>
+          {cart.map((item) => <div className="order-line" key={item.cartId}><span>{item.title}<small>{item.meta}</small></span><span>{money(item.price, item.currency)}</span></div>)}
+          {totals.map((group) => <div className="order-line" key={group.currency}><span>GST (18%){totals.length > 1 ? ` (${group.currency})` : ''}</span><span>{money(group.gst, group.currency)}</span></div>)}
+          <div className="order-total"><span>Total</span><span>{formatCartTotals(totals, 'total')}</span></div>
+          <form id="checkoutForm" onSubmit={(event) => {
+            event.preventDefault()
+            const name = (event.currentTarget.elements.namedItem('name') as HTMLInputElement).value.trim()
+            const count = cart.length
+            setProcessing(true)
+            window.setTimeout(() => {
+              setProcessing(false)
+              setModal({ kind: 'success', name, count })
+              fireConfetti()
+            }, 900)
+          }}>
+            <div className="checkout-fields">
+              <label htmlFor="checkoutName">Full name<input id="checkoutName" name="name" autoComplete="name" required maxLength={100} /></label>
+              <label htmlFor="checkoutEmail">Email address<input id="checkoutEmail" name="email" type="email" autoComplete="email" required maxLength={254} /></label>
+              <label htmlFor="checkoutPhone">Phone number<input id="checkoutPhone" name="phone" type="tel" autoComplete="tel" inputMode="tel" required pattern="[0-9+() -]{7,20}" title="Enter a valid phone number" /></label>
+            </div>
+            <p style={{ fontSize: '.82rem', fontWeight: 600, color: 'var(--ink)', margin: '16px 0 4px' }}>Payment method</p>
+            <div className="pay-methods" id="payMethods">
+              {/* type="button": in the original these default to submit, so picking a method could submit the form. */}
+              {PAY_METHODS.map((method) => <button key={method.id} type="button" className={`pay-chip${method.id === payMethod ? ' is-selected' : ''}`} data-pm={method.id} onClick={() => setPayMethod(method.id)}>{method.icon}{method.label}</button>)}
+            </div>
+            <button className="btn btn-primary btn-block" style={{ marginTop: 18 }} id="payNowBtn" type="submit" disabled={processing}>{processing ? 'Processing…' : 'Complete demo booking'}</button>
+          </form>
+          <p style={{ fontSize: '.76rem', textAlign: 'center', margin: '12px 0 0' }}>Demo only: no real payment or booking is processed.</p>
+        </>
+      )
+    }
+    if (modal.kind === 'success') {
+      return (
+        <>
+          <button className="icon-btn close-x" id="modalCloseBtn2" aria-label="Close" onClick={closeModal}><CloseIcon /></button>
+          <div className="pay-success">
+            <svg viewBox="0 0 64 64" fill="none"><circle cx="32" cy="32" r="30" fill="var(--forest)" /><path d="M20 33l8 8 16-18" stroke="var(--on-forest)" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" /></svg>
+            <h3>Demo booking complete</h3>
+            <p>Thanks, {modal.name}. Your demo checkout includes {modal.count} item{modal.count > 1 ? 's' : ''}. No payment was taken and no booking was submitted.</p>
+            <button className="btn btn-primary btn-block" id="doneBtn" onClick={() => { setCart([]); closeModal(); closeCart() }}>Done</button>
+          </div>
+        </>
+      )
+    }
+    return <TraineeProfile trainee={modal.trainee} onClose={closeModal} />
+  }
+
+  return (
+    <>
+      <style>{homeCss}</style>
+      <header className="site">
+        <div className="wrap nav-row">
+          <a href="#top" className="brand"><BrandMark fill="var(--forest)" stroke="var(--on-forest)" /><span>DIY Forests</span></a>
+          <nav className="nav-links" id="navLinks">
+            {NAV_ITEMS.map(([id, label]) => <a key={id} href={`#${id}`} data-section={id} className={activeSection === id ? 'active' : undefined}>{label}</a>)}
+          </nav>
+          <div className="nav-right">
+            <button ref={cartBtnRef} className="icon-toggle cart-btn" id="cartOpenBtn" aria-label="Open cart" style={{ width: 'auto', padding: '0 14px 0 12px', borderRadius: 22, gap: 6 }} onClick={() => setCartOpen(true)}>
+              <svg viewBox="0 0 24 24" fill="none" width="19" height="19" style={{ position: 'static' }}><path d="M3 4h2l2.4 12.2a2 2 0 0 0 2 1.6h7.6a2 2 0 0 0 2-1.6L21 8H6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /><circle cx="9" cy="20" r="1.4" fill="currentColor" /><circle cx="17" cy="20" r="1.4" fill="currentColor" /></svg>
+              <span style={{ fontSize: 14, fontWeight: 600 }}>Cart</span>
+              <span className="cart-badge" id="cartBadge" style={{ display: cart.length ? 'flex' : 'none', position: 'static', marginLeft: 2 }}>{cart.length}</span>
+            </button>
+            <button className="hamburger" id="hamburgerBtn" aria-label="Menu" onClick={() => setMobileMenuOpen((open) => !open)}>
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none"><path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
+            </button>
+          </div>
+        </div>
+        <div className={`mobile-menu${mobileMenuOpen ? ' open' : ''}`} id="mobileMenu">
+          {NAV_ITEMS.map(([id, label]) => <a key={id} href={`#${id}`} onClick={() => setMobileMenuOpen(false)}>{label}</a>)}
+        </div>
+      </header>
+
+      <main id="top">
+        <section className="hero">
+          <div className="wrap">
+            <div className="hero-copy">
+              <h1>Learn to Grow a Forest</h1>
+              <p>Imagine a dense, thriving forest growing in your backyard, on a city plot, or even a patch of barren land.</p>
+              <p>Learn how with Shubhendu Sharma, the eco-entrepreneur who has helped grow hundreds of tiny, fast-growing forests around the world.</p>
+              <p>Master the method that grows native forests 10x faster and 30x denser, even in your backyard.</p>
+              <p className="hero-close">Enroll now and start planting your own forest!</p>
+              <div className="hero-cta">
+                <a href="#trainings" className="btn btn-primary">See trainings</a>
+                <a href="#webinar" className="btn btn-outline">This month&apos;s webinar — ₹149</a>
+              </div>
+            </div>
+            <div className="hero-art">
+              <img src="/webphoto1.jpeg" alt="Native forest restoration project in the Lesser Caucasus, Armenia" fetchPriority="high" decoding="async" />
+            </div>
+          </div>
+        </section>
+
+        <section className="founder-story" id="about-shubhendu" aria-labelledby="shubhendu-heading">
+          <div className="wrap founder-grid">
+            <div className="founder-media">
+              <div className="founder-photo">
+                <img src="/4c2a0a97a31a1e8bc7a05a2ee1835eaa636730e5_2400x1800-1024x768.webp" alt="Shubhendu Sharma, founder of Afforestt" loading="lazy" decoding="async" />
+              </div>
+            </div>
+            <div className="founder-card">
+              <div className="story-label">MEET YOUR TRAINER</div>
+              <h2 id="shubhendu-heading">Shubhendu Sharma</h2>
+              <div className="story-copy">
+                <p>Shubhendu Sharma trained directly under Dr. Akira Miyawaki and turned his forest-making method into a replicable system. He founded Afforestt, which has built hundreds of dense native forests across the world, from backyards to industrial sites. A TED Fellow, he is a leading global voice in urban afforestation.</p>
+              </div>
+              <div className="meta-line">Industrial Engineer • Eco-entrepreneur • TED Fellow</div>
+              <div className="milestones" aria-label="Key milestones in Shubhendu Sharma's journey">
+                <div className="milestone"><span className="milestone-year">2008</span><span className="milestone-text">Met Akira Miyawaki</span></div>
+                <div className="milestone"><span className="milestone-year">2009</span><span className="milestone-text">Worked with Miyawaki&apos;s team</span></div>
+                <div className="milestone"><span className="milestone-year">2011</span><span className="milestone-text">Founded Afforestt</span></div>
+              </div>
+              <div className="founder-cta">
+                <a className="btn btn-primary" href="https://www.ted.com/speakers/shubhendu_sharma" target="_blank" rel="noopener noreferrer">Explore on TED</a>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <hr className="divider" />
+
+        <section id="trainings">
+          <div className="wrap">
+            <div className="featured-training" id="trainingGrid">
+              <CourseGallery images={indepth.images ?? [{ src: indepth.image, alt: indepth.imageAlt }]} />
+              <div className="course-content">
+                <h3>{indepth.title}</h3>
+                <p className="course-intro">A complete live training to understand the method and learn how to create a native forest from start to finish.</p>
+                <p className="course-description">{indepth.tagline}</p>
+                <div className="course-facts"><span>{indepth.duration}</span><span>Live online · Friday evenings</span></div>
+                <p className="course-suitable"><strong>Suitable for</strong>{indepth.audience}</p>
+                <p className="course-price">{money(indepth.price, indepth.currency)}</p>
+                <div className="course-actions">
+                  <button className="btn btn-outline" data-id={indepth.id} data-kind="training" onClick={() => setModal({ kind: 'training', training: indepth })}>View details</button>
+                  <button className="btn btn-primary" data-id={indepth.id} data-kind="training" onClick={() => setModal({ kind: 'training', training: indepth })}>Choose a Friday</button>
+                </div>
+              </div>
+            </div>
+
+            <div id="offline" className="offline-feature">
+              <div>
+                <span className="offline-tag">5-day in-person residency</span>
+                <h2>Offline Workshop</h2>
+                <p>Five full days on the ground with our team — planting, soil work, species selection and design, done for real. Food and accommodation are included, so all you bring is yourself.</p>
+                <ul className="includes-list" id="offlineIncludes" style={{ color: 'var(--on-forest)' }}>
+                  {OFFLINE.includes.map((item) => <li key={item}><CheckIconSm /><span>{item}</span></li>)}
+                </ul>
+                <div className="offline-price-row"><span className="price" id="offlinePrice">{money(OFFLINE.price)}</span><span className="per">all-inclusive · 5 days</span></div>
+                <button className="btn btn-ochre" id="offlineEnrollBtn" onClick={() => setModal({ kind: 'offline' })}>Choose your start date</button>
+              </div>
+              <OfflineGallery />
+            </div>
+          </div>
+        </section>
+
+        <hr className="divider" />
+
+        <section id="webinar">
+          <div className="wrap">
+            <div className="section-head"><div><span className="section-tag">Free to low-cost</span><h2>Monthly webinar</h2></div></div>
+            <div className="webinar-banner">
+              <a className="webinar-details-link" href="/monthly-webinar" aria-label="Learn more about the Monthly Webinar">
+                <div className="webinar-icon"><svg viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="18" height="16" rx="2" stroke="var(--on-forest)" strokeWidth="1.8" /><path d="M3 10h18M8 3v4M16 3v4" stroke="var(--on-forest)" strokeWidth="1.8" strokeLinecap="round" /></svg></div>
+                <div className="webinar-mid">
+                  <span className="live-tag"><span className="pulse-dot" />NEXT WEBINAR</span>
+                  <h3 id="webinarDateLine">{formatWebinarDateTime(webinar.date)}</h3>
+                  <p style={{ marginBottom: '.3em' }}>An open Q&amp;A introduction to the Miyawaki Method — great if you&apos;re not sure which training to start with.</p>
+                  <WebinarCountdown />
+                  <div className="seat-bar"><div className="seat-bar-fill" id="seatBarFill" style={{ width: `${Math.max(4, Math.round((seatsLeft / SEATS_TOTAL) * 100))}%` }} /></div>
+                  <span id="seatsLeftText" style={{ fontSize: '.8rem', fontWeight: 600, color: 'var(--ochre)' }}>{seatsLeft > 0 ? `Only ${seatsLeft} of ${SEATS_TOTAL} seats left` : 'Fully booked — join the next one'}</span>
+                </div>
+              </a>
+              <div className="webinar-right">
+                <span className="price" id="homeWebinarPrice">{money(webinar.price)}</span>
+                <button className="btn btn-primary" id="webinarRegisterBtn" disabled={seatsLeft <= 0} onClick={reserveWebinar}>{seatsLeft <= 0 ? 'Fully booked' : 'Reserve my seat'}</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <hr className="divider" />
+
+        <section id="trainees">
+          <div className="wrap">
+            <div className="section-head"><div><span className="section-tag">Learning together</span><h2>Meet Our Trainees</h2></div></div>
+            <p className="trainee-note">Select a trainee to view their profile and project. Sample profiles are marked as demos.</p>
+            <TraineesCarousel onOpen={(trainee, trigger) => setModal({ kind: 'trainee', trainee, trigger })} />
+          </div>
+        </section>
+
+        <hr className="divider" />
+
+        <section id="programs">
+          <div className="wrap">
+            <div className="section-head"><div><span className="section-tag">Field work</span><h2>What our Trainees Have Created</h2></div></div>
+            <ProgramsCarousel />
+          </div>
+        </section>
+
+        <hr className="divider" />
+
+        <section id="reviews">
+          <div className="wrap">
+            <div className="section-head"><div><span className="section-tag">Reviews</span><h2>What past trainees say</h2></div></div>
+            <div className="review-track overflow-x" id="reviewTrack">
+              {REVIEWS.map((review) => (
+                <div className="review-card" key={review.name}>
+                  <div className="stars">{Array.from({ length: 5 }, (_, i) => <svg key={i} viewBox="0 0 20 20" style={i < review.stars ? undefined : { fill: 'var(--line)' }}><path d={STAR_PATH} /></svg>)}</div>
+                  <p className="quote">{`“${review.quote}”`}</p>
+                  <div className="review-who"><div className="avatar" style={{ background: review.color }}>{review.initials}</div><div><strong>{review.name}</strong><span>{review.role}</span></div></div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer className="site">
+        <div className="wrap">
+          <div>
+            <div className="brand" style={{ color: 'var(--on-forest)', marginBottom: 14 }}>
+              <BrandMark fill="var(--bg-raised)" stroke="var(--forest)" />
+              <span style={{ color: 'var(--on-forest)' }}>DIY Forests<br /><small style={{ color: 'var(--footer-muted)' }}>BY SHUBHENDU SHARMA</small></span>
+            </div>
+            <p>DIY Forests is the training platform from Afforestt, who have been growing native forests using the Miyawaki method since 2011, founded by Shubhendu Sharma. Headquartered in Kashipur, Uttarakhand — our mission is to bring back lost native forests.</p>
+          </div>
+          <div>
+            <h4>Explore</h4>
+            <ul>
+              <li><a href="#trainings">Live trainings</a></li>
+              <li><a href="#trainees">Trainees</a></li>
+              <li><a href="#programs">Projects</a></li>
+              <li><a href="#offline">Offline workshop</a></li>
+              <li><a href="#webinar">Monthly webinar</a></li>
+              <li><a href="#reviews">Reviews</a></li>
+            </ul>
+          </div>
+          <div>
+            <h4>Support</h4>
+            <ul>
+              <li><a href="#" onClick={(event) => event.preventDefault()}>Help centre</a></li>
+              <li><a href="#" onClick={(event) => event.preventDefault()}>Refund policy</a></li>
+              <li><a href="#" onClick={(event) => event.preventDefault()}>Contact us</a></li>
+            </ul>
+          </div>
+        </div>
+        <div className="wrap foot-bottom">
+          <span>© 2026 DIY Forests. A demo page built for internship review.</span>
+          <span>Made with the Miyawaki method in mind 🌱</span>
+        </div>
+      </footer>
+
+      <div className={`scrim${cartOpen ? ' open' : ''}`} id="scrim" onClick={() => { closeCart(); closeModal() }} />
+      <aside className={`cart-drawer${cartOpen ? ' open' : ''}`} id="cartDrawer" aria-label="Shopping cart">
+        <div className="cart-head"><h3>Your cart</h3><button className="icon-btn" id="cartCloseBtn" aria-label="Close cart" onClick={closeCart}><CloseIcon /></button></div>
+        <div className="cart-items" id="cartItems">
+          {cart.length === 0 ? (
+            <div className="cart-empty">
+              <svg viewBox="0 0 24 24" fill="none"><path d="M3 4h2l2.4 12.2a2 2 0 0 0 2 1.6h7.6a2 2 0 0 0 2-1.6L21 8H6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              <p style={{ margin: 0 }}>Your cart is empty.<br />Add a training to get started.</p>
+            </div>
+          ) : cart.map((item) => (
+            <div className="cart-item" key={item.cartId}>
+              <div className="thumb"><ArtImage art={item.art} /></div>
+              <div className="info"><h5>{item.title}</h5><span>{item.meta}</span><br /><button className="remove-link" data-cid={item.cartId} onClick={() => setCart((current) => current.filter((entry) => entry.cartId !== item.cartId))}>Remove</button></div>
+              <div className="price-col"><span className="price">{money(item.price, item.currency)}</span></div>
+            </div>
+          ))}
+        </div>
+        <div className="cart-summary" id="cartSummary" style={{ display: cart.length ? 'block' : 'none' }}>
+          <div className="cart-row"><span>Subtotal</span><span id="cartSubtotal">{formatCartTotals(totals, 'subtotal')}</span></div>
+          <div className="cart-row"><span>GST (18%)</span><span id="cartGst">{formatCartTotals(totals, 'gst')}</span></div>
+          <div className="cart-row total"><span>Total</span><span className="price" id="cartTotal">{formatCartTotals(totals, 'total')}</span></div>
+          <button className="btn btn-primary btn-block" id="checkoutBtn" onClick={() => { if (cart.length) setModal({ kind: 'checkout' }) }}>Proceed to checkout</button>
+        </div>
+      </aside>
+
+      <div className={`modal-scrim${modal ? ' open' : ''}`} id="modalScrim" onClick={(event) => { if (event.target === event.currentTarget) closeModal() }}>
+        <div
+          ref={modalBodyRef}
+          className={`modal${traineeOpen ? ' trainee-profile-modal' : ''}`}
+          id="modalBody"
+          role={traineeOpen ? 'dialog' : undefined}
+          aria-modal={traineeOpen ? 'true' : undefined}
+          aria-labelledby={traineeOpen ? 'traineeProfileTitle' : undefined}
+        >
+          {renderModal()}
+        </div>
+      </div>
+
+      <div className={`toast${toast.show ? ' show' : ''}`} id="toast"><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /></svg><span id="toastText">{toast.text}</span></div>
+
+      <button className={`top-btn${showTop ? ' show' : ''}`} id="topBtn" aria-label="Back to top" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}><svg viewBox="0 0 24 24" fill="none"><path d="M12 19V5M5 12l7-7 7 7" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" /></svg></button>
+
+      {confetti.map((piece) => <div key={piece.id} className="confetti-piece" style={{ left: `${piece.left}vw`, background: piece.background, animationDuration: `${piece.duration}s`, borderRadius: piece.radius }} />)}
+    </>
+  )
+}
