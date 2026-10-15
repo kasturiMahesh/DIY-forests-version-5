@@ -1,0 +1,87 @@
+// DIY Forests catalog schema (Stage 2): products and their scheduled sessions.
+// Bookings, customers and payments are added in later stages.
+//
+// Constraints Prisma cannot express (CHECKs) live in the migration SQL; see
+// prisma/migrations/*_init_catalog/migration.sql and backend/README.md.
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  runtime             = "nodejs"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum ProductType {
+  ONLINE_TRAINING
+  OFFLINE_WORKSHOP
+  WEBINAR
+
+  @@map("product_type")
+}
+
+/// DRAFT: not shown to customers. PUBLISHED: visible (and bookable in a later stage). CANCELLED: kept for history.
+enum SessionStatus {
+  DRAFT
+  PUBLISHED
+  CANCELLED
+
+  @@map("session_status")
+}
+
+model Product {
+  id            String      @id @default(uuid(7)) @db.Uuid
+  /// Stable public identifier, e.g. "online-training". Used by the seed for idempotent upserts.
+  slug          String      @unique @db.VarChar(80)
+  name          String      @db.VarChar(160)
+  type          ProductType
+  /// One-line tagline shown on cards.
+  summary       String?
+  description   String?
+  /// "Suitable for" text.
+  audience      String?
+  /// Display text such as "8 hours · 2 days". Not used for scheduling.
+  durationLabel String?     @map("duration_label") @db.VarChar(80)
+  /// Exact decimal amount in major units (500.00 = USD 500). Never a float.
+  priceAmount   Decimal     @map("price_amount") @db.Decimal(12, 2)
+  /// ISO 4217 code, upper case (CHECK constraint). Prices are never converted between currencies.
+  currency      String      @db.Char(3)
+  isActive      Boolean     @default(true) @map("is_active")
+  createdAt     DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  sessions Session[]
+
+  @@index([type, isActive])
+  @@map("products")
+}
+
+model Session {
+  id          String        @id @default(uuid(7)) @db.Uuid
+  productId   String        @map("product_id") @db.Uuid
+  /// The single real instant the session starts (stored in UTC by timestamptz).
+  startsAt    DateTime      @map("starts_at") @db.Timestamptz(3)
+  /// Null when the duration is not yet known. Must be after startsAt (CHECK constraint).
+  endsAt      DateTime?     @map("ends_at") @db.Timestamptz(3)
+  /// IANA zone the organizer schedules in. Used to express local times; never changes the instant.
+  timezone    String        @default("Asia/Kolkata") @db.VarChar(64)
+  /// Maximum attendees. Null = not set yet. Must be positive (CHECK constraint).
+  capacity    Int?
+  status      SessionStatus @default(DRAFT)
+  /// Internal note for organizers (e.g. why a seeded session needs confirmation). Not for customers.
+  internalNote String?      @map("internal_note")
+  createdAt   DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  // Restrict: a product that has sessions cannot be deleted; deactivate it instead.
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  /// One session per product per start instant; also the seed's upsert key.
+  @@unique([productId, startsAt])
+  @@index([status, startsAt])
+  @@map("sessions")
+}
