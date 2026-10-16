@@ -7,12 +7,13 @@ describe('loadEnv', () => {
       nodeEnv: 'development',
       port: 3000,
       corsOrigins: ['http://localhost:5173', 'http://localhost:4173'],
+      trustProxy: 0,
     })
   })
 
   it('parses PORT and a comma-separated origin list', () => {
     const env = loadEnv({ NODE_ENV: 'production', PORT: '8080', CORS_ORIGINS: ' https://diyforests.example , https://www.diyforests.example ' })
-    expect(env).toEqual({ nodeEnv: 'production', port: 8080, corsOrigins: ['https://diyforests.example', 'https://www.diyforests.example'] })
+    expect(env).toEqual({ nodeEnv: 'production', port: 8080, corsOrigins: ['https://diyforests.example', 'https://www.diyforests.example'], trustProxy: 0 })
   })
 
   it.each([

@@ -53,10 +53,29 @@ To see live catalog data, also run the backend: `cd backend && npm run dev`. The
 
 When `VITE_API_BASE_URL` points at another origin, add that site's origin to the backend's `CORS_ORIGINS`.
 
+## Accounts and sign-in (Stage 4A)
+
+- **Header:** a **Sign in** pill sits beside Cart, in the same style. Signed in, it reads **Account**, or **Admin** for a staff session. On phones it shows only its icon, so the header stays on one row.
+- **Pages:**
+
+  | Page | Purpose |
+  |---|---|
+  | `/sign-in` | Sign-in and create-account buttons, plus friendly messages for sign-in errors (`?error=…`) |
+  | `/account` | Your own details, display name, session expiry and sign out. Bookings arrive in a later stage. |
+  | `/admin` | Staff sign-in, then the dashboard shell. Management tools arrive in Stage 4B and 4C. The page asks the server (`GET /api/v1/admin/me`) before showing anything, so a customer session only ever sees "no access". |
+
+  These pages reuse the webinar page's header, footer and buttons (`webinar.css`), plus a few form and card rules in `src/styles/auth.css`.
+- **Sign-in and session handling:**
+  - Sign-in and sign-out are full-page navigations to the backend, which talks to the identity provider. No password ever passes through this app.
+  - The session is an `HttpOnly` cookie, so JavaScript can't read it.
+  - `AuthProvider` (`src/auth/`) asks `GET /api/v1/auth/me` once, then exposes these states: loading, signed out (including "session expired"), signed in, unavailable, error.
+  - State-changing requests send the CSRF token from `/auth/me` in `X-CSRF-Token`.
+- **Local sign-in with test identities:** follow "Local development with test identities" in `backend/README.md`.
+
 ## Tests and checks
 
 ```bash
-npm test                                   # Vitest: API client, price/date formatting, loading/empty/error/published states
+npm test                                   # Vitest: API client (catalog + auth), formatting, catalog and sign-in/account/admin states
 npm run lint
 npx tsc -p tsconfig.app.json --noEmit
 npx tsc -p tsconfig.node.json --noEmit

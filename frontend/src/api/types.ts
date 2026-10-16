@@ -33,3 +33,16 @@ export type PublicSession = {
 export type SessionListMeta = { from: string; limit: number; count: number }
 
 export type SessionQuery = { type?: ProductType; product?: string; from?: string; limit?: number }
+
+// ---- authentication (Stage 4A) ----
+
+export type Role = 'CUSTOMER' | 'ADMIN'
+
+/** The signed-in account. Roles come from the server; the client never decides them. */
+export type AuthUser = { id: string; email: string; emailVerified: boolean; displayName: string | null; role: Role; pool: Role }
+
+export type SessionInfo = { kind: Role; idleExpiresAt: string; absoluteExpiresAt: string }
+
+export type MeResponse = { user: AuthUser; session: SessionInfo; csrfToken: string }
+
+export type AdminMeResponse = { user: AuthUser; session: SessionInfo }

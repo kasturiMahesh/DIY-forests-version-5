@@ -1,0 +1,27 @@
+/* Stage 4A pages (sign-in, account, admin). Built on webinar.css (same palette, type and buttons);
+   these rules only add a card, a form and status messages in the existing design language. */
+.auth-main{padding:clamp(36px,6vw,72px) 0 clamp(48px,7vw,84px);}
+.auth-card{max-width:720px; background:var(--bg-raised); border:1px solid var(--line); border-radius:10px; padding:clamp(20px,4vw,34px);}
+.auth-card + .auth-card{margin-top:22px;}
+.auth-card h1{font-size:clamp(1.9rem,3.4vw,2.6rem); line-height:1.1; color:var(--forest); margin-bottom:10px;}
+.auth-card h2{font-size:1.35rem; color:var(--forest); margin-bottom:8px;}
+.auth-card p{font-size:.98rem;}
+.auth-actions{display:flex; flex-wrap:wrap; gap:12px; margin-top:20px; align-items:center;}
+.btn-quiet{background:transparent; color:var(--forest-ink); border:1.5px solid var(--line);}
+.btn-quiet:hover{background:var(--secondary); border-color:var(--forest);}
+.btn[disabled]{opacity:.75; cursor:not-allowed;}
+.auth-details{display:grid; grid-template-columns:max-content minmax(0,1fr); gap:8px 18px; margin:18px 0 0; font-size:.95rem;}
+.auth-details dt{color:var(--ink-soft); font-weight:600;}
+.auth-details dd{margin:0; color:var(--ink); overflow-wrap:anywhere;}
+.auth-form{display:grid; gap:12px; margin-top:16px; max-width:420px;}
+.auth-form label{display:grid; gap:5px; font-size:.82rem; font-weight:600; color:var(--ink);}
+.auth-form input{width:100%; min-height:44px; padding:10px 12px; border:1.5px solid var(--line); border-radius:6px; background:var(--bg); color:var(--ink); font:inherit; font-size:.95rem;}
+.auth-form input:focus{outline:3px solid rgba(165,100,75,.16); outline-offset:2px; border-color:var(--forest);}
+.auth-message{font-size:.9rem; font-weight:600; color:var(--forest-ink); margin:14px 0 0;}
+.auth-message.is-error{color:var(--earth);}
+.auth-tag{display:inline-block; margin-bottom:10px; color:var(--forest-ink); font-size:.74rem; font-weight:700; letter-spacing:.1em; text-transform:uppercase;}
+.admin-grid{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; margin-top:20px;}
+.admin-tile{border:1.5px dashed var(--line); border-radius:8px; padding:16px; background:var(--bg);}
+.admin-tile h3{font-size:1.05rem; margin:0 0 6px; color:var(--forest);}
+.admin-tile p{font-size:.85rem; margin:0;}
+@media(max-width:600px){.admin-grid{grid-template-columns:1fr;} .auth-details{grid-template-columns:1fr; gap:2px 0;} .auth-details dd{margin-bottom:10px;}}

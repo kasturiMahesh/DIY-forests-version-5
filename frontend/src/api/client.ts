@@ -1,4 +1,4 @@
-import type { Money, ProductType, PublicProduct, PublicProductRef, PublicSession, SessionListMeta, SessionQuery } from './types'
+import type { AdminMeResponse, AuthUser, MeResponse, Money, ProductType, PublicProduct, PublicProductRef, PublicSession, SessionListMeta, SessionQuery } from './types'
 
 export type ApiErrorKind = 'network' | 'timeout' | 'http' | 'invalid-response'
 
@@ -41,6 +41,16 @@ export const isPublicSession: Guard<PublicSession> = (value): value is PublicSes
 const isSessionMeta: Guard<SessionListMeta> = (value): value is SessionListMeta =>
   isObject(value) && isInstant(value.from) && Number.isInteger(value.limit) && Number.isInteger(value.count)
 
+const isRole = (value: unknown) => value === 'CUSTOMER' || value === 'ADMIN'
+export const isAuthUser: Guard<AuthUser> = (value): value is AuthUser =>
+  isObject(value) && isString(value.id) && isString(value.email) && typeof value.emailVerified === 'boolean' && isNullableString(value.displayName) && isRole(value.role) && isRole(value.pool)
+const isSessionInfo = (value: unknown) => isObject(value) && isRole(value.kind) && isInstant(value.idleExpiresAt) && isInstant(value.absoluteExpiresAt)
+const isMeResponse: Guard<MeResponse> = (value): value is MeResponse =>
+  isObject(value) && isAuthUser(value.user) && isSessionInfo(value.session) && isString(value.csrfToken) && value.csrfToken.length > 0
+const isAdminMeResponse: Guard<AdminMeResponse> = (value): value is AdminMeResponse => isObject(value) && isAuthUser(value.user) && isSessionInfo(value.session)
+const isLogoutResponse: Guard<{ logoutUrl: string | null }> = (value): value is { logoutUrl: string | null } =>
+  isObject(value) && (value.logoutUrl === null || (isString(value.logoutUrl) && value.logoutUrl.startsWith('https://'))) // only a provider page over https
+
 // ---- transport ----
 
 export type ApiClientOptions = {
@@ -53,12 +63,22 @@ export type ApiClientOptions = {
 export function createApiClient({ baseUrl = '', fetch: fetchImpl = globalThis.fetch.bind(globalThis), timeoutMs = 10_000 }: ApiClientOptions = {}) {
   const root = `${baseUrl.replace(/\/+$/, '')}/api/v1`
 
-  async function getJson(path: string, signal?: AbortSignal): Promise<unknown> {
+  type RequestOptions = { method?: 'GET' | 'POST' | 'PATCH'; body?: unknown; csrfToken?: string; signal?: AbortSignal | undefined }
+
+  async function request(path: string, { method = 'GET', body: payload, csrfToken, signal }: RequestOptions = {}): Promise<unknown> {
     const timeout = AbortSignal.timeout(timeoutMs)
     let response: Response
     try {
       response = await fetchImpl(`${root}${path}`, {
-        headers: { Accept: 'application/json' },
+        method,
+        // The session is an HttpOnly cookie; the browser attaches it. JavaScript never sees it.
+        credentials: 'include',
+        headers: {
+          Accept: 'application/json',
+          ...(payload !== undefined ? { 'Content-Type': 'application/json' } : {}),
+          ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
+        },
+        ...(payload !== undefined ? { body: JSON.stringify(payload) } : {}),
         signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       })
     } catch (error) {
@@ -86,6 +106,8 @@ export function createApiClient({ baseUrl = '', fetch: fetchImpl = globalThis.fe
     if (body === null) throw new ApiError('invalid-response', 'The server sent an unreadable response.', { status: response.status })
     return body
   }
+
+  const getJson = (path: string, signal?: AbortSignal) => request(path, { signal })
 
   function expectData<T>(body: unknown, guard: Guard<T>): T {
     if (isObject(body) && guard(body.data)) return body.data
@@ -118,6 +140,42 @@ export function createApiClient({ baseUrl = '', fetch: fetchImpl = globalThis.fe
 
     async getSession(id: string, signal?: AbortSignal): Promise<PublicSession> {
       return expectData(await getJson(`/sessions/${encodeURIComponent(id)}`, signal), isPublicSession)
+    },
+
+    // ---- authentication (Stage 4A) ----
+
+    /** Current session. A 401 ApiError means "signed out"; 503 means sign-in is unavailable. */
+    async getMe(signal?: AbortSignal): Promise<MeResponse> {
+      return expectData(await request('/auth/me', { signal }), isMeResponse)
+    },
+
+    /** Ends the session; returns the identity provider's sign-out URL (or null). */
+    async logout(csrfToken: string): Promise<{ logoutUrl: string | null }> {
+      return expectData(await request('/auth/logout', { method: 'POST', csrfToken }), isLogoutResponse)
+    },
+
+    async getProfile(signal?: AbortSignal): Promise<AuthUser> {
+      return expectData(await request('/me/profile', { signal }), isAuthUser)
+    },
+
+    async updateProfile(csrfToken: string, displayName: string | null): Promise<AuthUser> {
+      return expectData(await request('/me/profile', { method: 'PATCH', csrfToken, body: { displayName } }), isAuthUser)
+    },
+
+    /** Server-side admin check. 403 = signed in but not an admin. */
+    async getAdminMe(signal?: AbortSignal): Promise<AdminMeResponse> {
+      return expectData(await request('/admin/me', { signal }), isAdminMeResponse)
+    },
+
+    /** Full-page navigations (not fetch): the backend redirects to the identity provider. */
+    signInUrl(returnTo = '/account') {
+      return `${root}/auth/login?returnTo=${encodeURIComponent(returnTo)}`
+    },
+    registerUrl(returnTo = '/account') {
+      return `${root}/auth/register?returnTo=${encodeURIComponent(returnTo)}`
+    },
+    adminSignInUrl(returnTo = '/admin') {
+      return `${root}/admin/auth/login?returnTo=${encodeURIComponent(returnTo)}`
     },
   }
 }

@@ -85,3 +85,103 @@ model Session {
   @@index([status, startsAt])
   @@map("sessions")
 }
+
+// ---------------------------------------------------------------------------
+// Stage 4A: authentication. Passwords are never stored here: identities live in the
+// identity provider (Cognito pools, or the guarded dev provider) and are referenced by
+// (identity_issuer, identity_subject). Roles and account status are trusted only from here.
+// ---------------------------------------------------------------------------
+
+/// Which identity pool an account (and a session) belongs to.
+enum IdentityPool {
+  CUSTOMER
+  ADMIN
+
+  @@map("identity_pool")
+}
+
+enum UserRole {
+  CUSTOMER
+  ADMIN
+
+  @@map("user_role")
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+
+  @@map("user_status")
+}
+
+/// An application account. Keyed by the provider identity; email is NOT unique (the same person
+/// can exist once in each pool, and the two accounts are never linked automatically).
+/// CHECK constraint: role = ADMIN exactly when identity_pool = ADMIN.
+model User {
+  id              String       @id @default(uuid(7)) @db.Uuid
+  identityPool    IdentityPool @map("identity_pool")
+  identityIssuer  String       @map("identity_issuer") @db.VarChar(255)
+  identitySubject String       @map("identity_subject") @db.VarChar(255)
+  /// Lower-cased (CHECK constraint).
+  email           String       @db.VarChar(320)
+  emailVerified   Boolean      @default(false) @map("email_verified")
+  displayName     String?      @map("display_name") @db.VarChar(80)
+  role            UserRole     @default(CUSTOMER)
+  status          UserStatus   @default(ACTIVE)
+  lastLoginAt     DateTime?    @map("last_login_at") @db.Timestamptz(3)
+  disabledAt      DateTime?    @map("disabled_at") @db.Timestamptz(3)
+  createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  sessions    AuthSession[]
+  auditEvents AuditEvent[]
+
+  @@unique([identityIssuer, identitySubject])
+  @@index([email])
+  @@map("users")
+}
+
+/// Server-side session. Only the SHA-256 hash of the random cookie token is stored.
+model AuthSession {
+  id                String       @id @default(uuid(7)) @db.Uuid
+  userId            String       @map("user_id") @db.Uuid
+  /// Hex SHA-256 of the session token (the token itself exists only in the browser cookie).
+  tokenHash         String       @unique @map("token_hash") @db.Char(64)
+  kind              IdentityPool
+  createdAt         DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  lastSeenAt        DateTime     @map("last_seen_at") @db.Timestamptz(3)
+  idleExpiresAt     DateTime     @map("idle_expires_at") @db.Timestamptz(3)
+  absoluteExpiresAt DateTime     @map("absolute_expires_at") @db.Timestamptz(3)
+  revokedAt         DateTime?    @map("revoked_at") @db.Timestamptz(3)
+  revokedReason     String?      @map("revoked_reason") @db.VarChar(40)
+  userAgent         String?      @map("user_agent") @db.VarChar(200)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([userId])
+  @@index([absoluteExpiresAt])
+  @@map("auth_sessions")
+}
+
+/// Append-only record of security-relevant and administrative actions. No secrets or tokens.
+model AuditEvent {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  /// The acting account, when the action came from a signed-in user.
+  actorUserId String?  @map("actor_user_id") @db.Uuid
+  /// Who acted, e.g. "user" or "operator-cli". Never contains secrets.
+  actorLabel  String   @map("actor_label") @db.VarChar(120)
+  /// Upper-case verb such as ADMIN_GRANTED (CHECK constraint).
+  action      String   @db.VarChar(60)
+  targetType  String?  @map("target_type") @db.VarChar(40)
+  targetId    String?  @map("target_id") @db.VarChar(64)
+  requestId   String?  @map("request_id") @db.VarChar(128)
+  details     Json?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  actor User? @relation(fields: [actorUserId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+
+  @@index([createdAt])
+  @@index([actorUserId])
+  @@index([targetType, targetId])
+  @@map("audit_events")
+}

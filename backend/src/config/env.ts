@@ -6,12 +6,16 @@ const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   CORS_ORIGINS: z.string().optional(),
+  // Number of reverse-proxy hops in front of the API (e.g. 1 behind a load balancer). Determines the
+  // client IP used for rate limiting; 0 = trust no X-Forwarded-For header.
+  TRUST_PROXY: z.coerce.number().int().min(0).max(10).default(0),
 })
 
 export type Env = {
   nodeEnv: 'development' | 'test' | 'production'
   port: number
   corsOrigins: string[]
+  trustProxy: number
 }
 
 export class ConfigError extends Error {
@@ -24,7 +28,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   if (!result.success) {
     throw new ConfigError(`Invalid environment configuration:\n${z.prettifyError(result.error)}`)
   }
-  const { NODE_ENV, PORT, CORS_ORIGINS } = result.data
+  const { NODE_ENV, PORT, CORS_ORIGINS, TRUST_PROXY } = result.data
 
   if (NODE_ENV === 'production' && !CORS_ORIGINS?.trim()) {
     throw new ConfigError('Invalid environment configuration: CORS_ORIGINS is required in production')
@@ -35,5 +39,5 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     throw new ConfigError(`Invalid environment configuration: CORS_ORIGINS entry "${badOrigin}" must be an origin like https://example.com`)
   }
 
-  return { nodeEnv: NODE_ENV, port: PORT, corsOrigins }
+  return { nodeEnv: NODE_ENV, port: PORT, corsOrigins, trustProxy: TRUST_PROXY }
 }

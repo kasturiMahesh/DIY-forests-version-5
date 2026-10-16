@@ -1,9 +1,12 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { createApp } from './app.js'
+import { loadAuthConfig, type AuthConfig } from './config/auth.js'
 import { describeDatabaseUrl, loadDatabaseConfig } from './config/database.js'
 import { ConfigError, loadEnv } from './config/env.js'
 import { createPrismaClient, type PrismaClient } from './db/client.js'
 import { createLogger } from './lib/logger.js'
+import { createAuthRepository } from './modules/auth/auth.repository.js'
+import { createAuthModule } from './modules/auth/index.js'
 import { createCatalogRepository } from './modules/catalog/catalog.repository.js'
 
 // Local development convenience: load backend/.env if present (Node's built-in loader, no dependency).
@@ -13,8 +16,10 @@ if (existsSync('.env')) process.loadEnvFile('.env')
 const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }
 
 let env
+let authConfig: AuthConfig
 try {
   env = loadEnv()
+  authConfig = loadAuthConfig(process.env, env)
 } catch (error) {
   if (error instanceof ConfigError) {
     console.error(error.message)
@@ -37,7 +42,12 @@ try {
   logger.warn('Database not configured; catalog endpoints will return 503', { reason: error.message })
 }
 
-const app = createApp({ env, version, logger, catalog: prisma ? createCatalogRepository(prisma) : null })
+if (authConfig.mode === 'dev') logger.warn('DEVELOPMENT SIGN-IN IS ENABLED (AUTH_MODE=dev): test identities only, never use in production')
+if (authConfig.mode !== 'disabled' && !prisma) logger.warn('Authentication is configured but there is no database; sign-in will report unavailable')
+logger.info('Authentication', { mode: authConfig.mode })
+
+const auth = createAuthModule({ config: authConfig, repository: prisma ? createAuthRepository(prisma) : null, logger })
+const app = createApp({ env, version, logger, catalog: prisma ? createCatalogRepository(prisma) : null, auth })
 const server = app.listen(env.port, () => {
   logger.info('API listening', { port: env.port, nodeEnv: env.nodeEnv, version })
 })

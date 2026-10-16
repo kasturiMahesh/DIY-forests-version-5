@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { AccountLink } from '../auth/AccountLink'
+import accountLinkCss from '../styles/account-link.css?inline'
 import homeCss from '../styles/home.css?inline'
 import {
   OFFLINE, PROGRAMS, REVIEWS, TRAINEES, TRAININGS, addDays, fmtRange, fmtShort, money, nextWeekdayDates,
@@ -677,6 +679,7 @@ export default function HomePage() {
   return (
     <>
       <style>{homeCss}</style>
+      <style>{accountLinkCss}</style>
       <header className="site">
         <div className="wrap nav-row">
           <a href="#top" className="brand"><BrandMark fill="var(--forest)" stroke="var(--on-forest)" /><span>DIY Forests</span></a>
@@ -684,6 +687,7 @@ export default function HomePage() {
             {NAV_ITEMS.map(([id, label]) => <a key={id} href={`#${id}`} data-section={id} className={activeSection === id ? 'active' : undefined}>{label}</a>)}
           </nav>
           <div className="nav-right">
+            <AccountLink />
             <button ref={cartBtnRef} className="icon-toggle cart-btn" id="cartOpenBtn" aria-label="Open cart" style={{ width: 'auto', padding: '0 14px 0 12px', borderRadius: 22, gap: 6 }} onClick={() => setCartOpen(true)}>
               <svg viewBox="0 0 24 24" fill="none" width="19" height="19" style={{ position: 'static' }}><path d="M3 4h2l2.4 12.2a2 2 0 0 0 2 1.6h7.6a2 2 0 0 0 2-1.6L21 8H6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /><circle cx="9" cy="20" r="1.4" fill="currentColor" /><circle cx="17" cy="20" r="1.4" fill="currentColor" /></svg>
               <span style={{ fontSize: 14, fontWeight: 600 }}>Cart</span>
