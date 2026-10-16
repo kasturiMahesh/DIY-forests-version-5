@@ -82,7 +82,7 @@ describe('catalog API', () => {
     it('lists active products only, ordered by type then name, with exact prices', async () => {
       const res = await request(app).get('/api/v1/products')
       expect(res.status).toBe(200)
-      expect(res.headers['cache-control']).toBe('public, max-age=60')
+      expect(res.headers['cache-control']).toBe('public, max-age=15') // Stage 4B: short, so admin changes show quickly
       expect(res.headers['x-request-id']).toBeTruthy()
       expect(res.body.data.map((p: { slug: string }) => p.slug)).toEqual(['online-training', 'offline-workshop', 'monthly-webinar'])
       expect(res.body.data.map((p: { price: unknown }) => p.price)).toEqual([
@@ -143,7 +143,7 @@ describe('catalog API', () => {
     it('lists only published, upcoming sessions of active products, soonest first', async () => {
       const res = await request(app).get('/api/v1/sessions')
       expect(res.status).toBe(200)
-      expect(res.headers['cache-control']).toBe('public, max-age=30')
+      expect(res.headers['cache-control']).toBe('public, max-age=15')
       expect(res.body.data.map((s: { id: string }) => s.id)).toEqual([ids.webinarSoon, ids.trainingNext, ids.workshopLater])
       expect(res.body.meta).toMatchObject({ limit: 50, count: 3 })
       expect(Math.abs(Date.parse(res.body.meta.from) - Date.now())).toBeLessThan(60_000) // "now" on the server
@@ -158,7 +158,7 @@ describe('catalog API', () => {
     it('serializes instants as UTC ISO strings and never leaks internal fields', async () => {
       const res = await request(app).get('/api/v1/sessions')
       const first = res.body.data[0]
-      expect(Object.keys(first).sort()).toEqual(['capacity', 'endsAt', 'id', 'product', 'startsAt', 'timezone'])
+      expect(Object.keys(first).sort()).toEqual(['capacity', 'endsAt', 'id', 'product', 'startsAt', 'timezone', 'venue'])
       expect(Object.keys(first.product).sort()).toEqual(['id', 'name', 'price', 'slug', 'type'])
       expect(first).toEqual({
         id: ids.webinarSoon,
@@ -166,6 +166,7 @@ describe('catalog API', () => {
         endsAt: new Date(startsAt.webinarSoon!.getTime() + HOUR).toISOString(),
         timezone: 'Asia/Kolkata',
         capacity: 40,
+        venue: null,
         product: { id: expect.any(String), slug: 'monthly-webinar', name: 'Monthly Webinar', type: 'WEBINAR', price: { amount: '149.00', currency: 'INR' } },
       })
       expect(first.startsAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)

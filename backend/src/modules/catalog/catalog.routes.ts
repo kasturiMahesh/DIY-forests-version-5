@@ -2,7 +2,7 @@ import { Router, type Response } from 'express'
 import { z } from 'zod'
 import { HttpError } from '../../lib/http-error.js'
 import type { CatalogRepository } from './catalog.repository.js'
-import type { ItemResponse, ListResponse, PublicProduct, PublicSession, SessionListMeta } from './catalog.types.js'
+import type { CohortListMeta, ItemResponse, ListResponse, PublicCohort, PublicProduct, PublicSession, SessionListMeta } from './catalog.types.js'
 
 const SLUG = z.string().regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'must be a lower-case slug like "online-training"').max(80)
 const PRODUCT_TYPE = z.enum(['ONLINE_TRAINING', 'OFFLINE_WORKSHOP', 'WEBINAR'])
@@ -15,6 +15,11 @@ const sessionListQuery = z.object({
   type: PRODUCT_TYPE.optional(),
   product: SLUG.optional(),
   // An instant, so it must carry "Z" or an offset; a bare local time would depend on someone's zone.
+  from: z.iso.datetime({ offset: true, message: 'must be an ISO 8601 instant with Z or an offset, e.g. 2026-11-01T00:00:00Z' }).optional(),
+  limit: z.coerce.number().int().min(1).max(MAX_SESSION_LIMIT).default(DEFAULT_SESSION_LIMIT),
+}).strict()
+const cohortListQuery = z.object({
+  product: SLUG.optional(),
   from: z.iso.datetime({ offset: true, message: 'must be an ISO 8601 instant with Z or an offset, e.g. 2026-11-01T00:00:00Z' }).optional(),
   limit: z.coerce.number().int().min(1).max(MAX_SESSION_LIMIT).default(DEFAULT_SESSION_LIMIT),
 }).strict()
@@ -43,7 +48,12 @@ async function load<T>(work: () => Promise<T>): Promise<T> {
   }
 }
 
-const cache = (res: Response, seconds: number) => res.set('Cache-Control', `public, max-age=${seconds}`)
+/**
+ * Short public cache: admins publish, reschedule and cancel in Stage 4B, and visitors should see that
+ * within seconds. 15 s still absorbs bursts of identical requests (and a future CDN can use it).
+ */
+export const CATALOG_MAX_AGE_SECONDS = 15
+const cache = (res: Response) => res.set('Cache-Control', `public, max-age=${CATALOG_MAX_AGE_SECONDS}`)
 
 /**
  * Read-only public catalog. `repository` is null when no database is configured; every
@@ -60,7 +70,7 @@ export function catalogRouter(repository: CatalogRepository | null): Router {
     const { type } = parse(productListQuery, req.query, 'query')
     const data = await load(() => repo().listProducts(type ? { type } : {}))
     const body: ListResponse<PublicProduct> = { data }
-    cache(res, 60).json(body)
+    cache(res).json(body)
   })
 
   router.get('/products/:slug', async (req, res) => {
@@ -68,7 +78,7 @@ export function catalogRouter(repository: CatalogRepository | null): Router {
     const product = await load(() => repo().findProduct(slug))
     if (!product) throw new HttpError(404, 'PRODUCT_NOT_FOUND', 'Product not found')
     const body: ItemResponse<PublicProduct> = { data: product }
-    cache(res, 60).json(body)
+    cache(res).json(body)
   })
 
   router.get('/sessions', async (req, res) => {
@@ -79,7 +89,7 @@ export function catalogRouter(repository: CatalogRepository | null): Router {
       repo().listUpcomingSessions({ from: fromInstant, limit, ...(product ? { productSlug: product } : {}), ...(type ? { type } : {}) }),
     )
     const body: ListResponse<PublicSession, SessionListMeta> = { data, meta: { from: fromInstant.toISOString(), limit, count: data.length } }
-    cache(res, 30).json(body)
+    cache(res).json(body)
   })
 
   router.get('/sessions/:id', async (req, res) => {
@@ -87,7 +97,24 @@ export function catalogRouter(repository: CatalogRepository | null): Router {
     const session = await load(() => repo().findSession(id))
     if (!session) throw new HttpError(404, 'SESSION_NOT_FOUND', 'Session not found')
     const body: ItemResponse<PublicSession> = { data: session }
-    cache(res, 30).json(body)
+    cache(res).json(body)
+  })
+
+  // Online training: two linked Friday sessions offered (and, in Stage 4C, booked) as one cohort.
+  router.get('/cohorts', async (req, res) => {
+    const { from, limit, product } = parse(cohortListQuery, req.query, 'query')
+    const fromInstant = from ? new Date(from) : new Date()
+    const data = await load(() => repo().listUpcomingCohorts({ from: fromInstant, limit, ...(product ? { productSlug: product } : {}) }))
+    const body: ListResponse<PublicCohort, CohortListMeta> = { data, meta: { from: fromInstant.toISOString(), limit, count: data.length } }
+    cache(res).json(body)
+  })
+
+  router.get('/cohorts/:id', async (req, res) => {
+    const { id } = parse(idParams, req.params, 'path')
+    const cohort = await load(() => repo().findCohort(id))
+    if (!cohort) throw new HttpError(404, 'COHORT_NOT_FOUND', 'Training dates not found')
+    const body: ItemResponse<PublicCohort> = { data: cohort }
+    cache(res).json(body)
   })
 
   return router

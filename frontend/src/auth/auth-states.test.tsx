@@ -102,11 +102,13 @@ describe('admin page', () => {
     expect(view(state({ status: 'signed-in', me: admin }), { state: 'error' })).toMatch(/couldn’t reach the server.*Try again/)
   })
 
-  it('confirmed admin: dashboard shell with clearly labelled, not-yet-available areas (no fake data)', () => {
+  it('confirmed admin: functional dashboard (Stage 4B) with section tabs, loading real data, no fake figures', () => {
     const html = view(state({ status: 'signed-in', me: admin }), { state: 'ok', data: { user: admin.user, session: admin.session } })
     expect(html).toContain('Admin dashboard')
     expect(html).toContain('Welcome, Test Admin')
-    expect(html.match(/Not available yet\./g)).toHaveLength(4)
+    for (const tab of ['Overview', 'Products', 'Webinars', 'Workshops', 'Online training']) expect(html).toContain(`>${tab}</a>`)
+    expect(html).toContain('Loading…') // panels fetch from the admin API; nothing is pre-filled
+    expect(html).toContain('Bookings and customer records are not available yet')
     expect(html).not.toMatch(/\d+ bookings|₹|\$\d/)
   })
 })

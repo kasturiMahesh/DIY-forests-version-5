@@ -44,8 +44,8 @@ export function accountRouter(deps: AuthDeps): Router {
   return router
 }
 
-/** Admin area. Stage 4A: only the authorization probe; management endpoints arrive in Stage 4B. */
-export function adminRouter(deps: AuthDeps): Router {
+/** Admin area: authorization probe plus (Stage 4B) the management API, all behind the same guards. */
+export function adminRouter(deps: AuthDeps, management?: Router): Router {
   const router = Router()
   const limiter = authRateLimit({ windowMinutes: deps.config.rateLimit.windowMinutes, max: deps.config.rateLimit.max * 10 })
   const session = loadSession(deps)
@@ -55,6 +55,7 @@ export function adminRouter(deps: AuthDeps): Router {
     const { user, session } = getAuth(res)!
     res.json({ data: { user: publicUser(user), session: { kind: session.kind, idleExpiresAt: session.idleExpiresAt.toISOString(), absoluteExpiresAt: session.absoluteExpiresAt.toISOString() } } })
   })
+  if (management) router.use('/admin', management)
 
   return router
 }

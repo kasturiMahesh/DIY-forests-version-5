@@ -15,6 +15,8 @@ export type AuthModuleOptions = {
   /** Tests may inject providers; otherwise they are built from `config.mode`. */
   providers?: IdentityProviders | null
   now?: () => Date
+  /** Stage 4B admin management routes, mounted under /admin behind the admin guards. */
+  adminManagement?: Router
 }
 
 /** Providers for the configured mode: none (disabled), the guarded dev provider, or OIDC (Cognito). */
@@ -44,6 +46,6 @@ export function createAuthModule(options: AuthModuleOptions): Router {
   const router = Router()
   router.use(authRouter({ ...deps, logger: options.logger, devProviders }))
   router.use(accountRouter(deps))
-  router.use(adminRouter(deps))
+  router.use(adminRouter(deps, options.adminManagement))
   return router
 }

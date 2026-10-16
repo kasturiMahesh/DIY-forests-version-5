@@ -28,10 +28,22 @@ export type PublicSession = {
   /** Organizer's IANA zone (for showing organizer-local time); clients display in the visitor's zone. */
   timezone: string
   capacity: number | null
+  /** Where an in-person session (offline workshop) takes place; null for online sessions. */
+  venue: string | null
   product: PublicProductRef
+}
+
+/** A published online-training offering: two 4-hour sessions on consecutive Fridays, booked as one. */
+export type PublicCohort = {
+  id: string
+  timezone: string
+  capacity: number | null
+  product: PublicProductRef
+  sessions: { sequence: 1 | 2; startsAt: string; endsAt: string }[]
 }
 
 export type ListResponse<T, M = undefined> = M extends undefined ? { data: T[] } : { data: T[]; meta: M }
 export type ItemResponse<T> = { data: T }
 
 export type SessionListMeta = { from: string; limit: number; count: number }
+export type CohortListMeta = SessionListMeta

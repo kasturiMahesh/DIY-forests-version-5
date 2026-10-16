@@ -7,7 +7,7 @@ import type { CatalogRepository } from '../src/modules/catalog/catalog.repositor
 import { memoryLogger, type LoggedLine } from './helpers.js'
 
 const env = loadEnv({ NODE_ENV: 'test' })
-const ENDPOINTS = ['/api/v1/products', '/api/v1/products/online-training', '/api/v1/sessions', '/api/v1/sessions/01990000-0000-7000-8000-000000000000']
+const ENDPOINTS = ['/api/v1/products', '/api/v1/products/online-training', '/api/v1/sessions', '/api/v1/sessions/01990000-0000-7000-8000-000000000000', '/api/v1/cohorts', '/api/v1/cohorts/01990000-0000-7000-8000-000000000000']
 
 // Simulates a driver failure whose message contains things that must never reach a client.
 const failing: CatalogRepository = {
@@ -15,6 +15,8 @@ const failing: CatalogRepository = {
   findProduct: () => Promise.reject(new Error('relation "products" does not exist')),
   listUpcomingSessions: () => Promise.reject(Object.assign(new Error('Invalid `prisma.session.findMany()` invocation'), { code: 'P1001' })),
   findSession: () => Promise.reject(new Error('timeout exceeded when trying to connect')),
+  listUpcomingCohorts: () => Promise.reject(new Error('connect ECONNREFUSED postgresql://app:hunter2@db.internal:5432/diy')),
+  findCohort: () => Promise.reject(new Error('relation "training_cohorts" does not exist')),
 }
 
 describe('catalog without a configured database', () => {

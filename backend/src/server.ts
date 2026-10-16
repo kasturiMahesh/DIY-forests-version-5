@@ -6,6 +6,8 @@ import { ConfigError, loadEnv } from './config/env.js'
 import { createPrismaClient, type PrismaClient } from './db/client.js'
 import { createLogger } from './lib/logger.js'
 import { createAuthRepository } from './modules/auth/auth.repository.js'
+import { createAdminRepository } from './modules/admin/admin.repository.js'
+import { adminManagementRouter } from './modules/admin/admin.routes.js'
 import { createAuthModule } from './modules/auth/index.js'
 import { createCatalogRepository } from './modules/catalog/catalog.repository.js'
 
@@ -46,7 +48,10 @@ if (authConfig.mode === 'dev') logger.warn('DEVELOPMENT SIGN-IN IS ENABLED (AUTH
 if (authConfig.mode !== 'disabled' && !prisma) logger.warn('Authentication is configured but there is no database; sign-in will report unavailable')
 logger.info('Authentication', { mode: authConfig.mode })
 
-const auth = createAuthModule({ config: authConfig, repository: prisma ? createAuthRepository(prisma) : null, logger })
+const auth = createAuthModule({
+  config: authConfig, repository: prisma ? createAuthRepository(prisma) : null, logger,
+  adminManagement: adminManagementRouter(prisma ? createAdminRepository(prisma) : null),
+})
 const app = createApp({ env, version, logger, catalog: prisma ? createCatalogRepository(prisma) : null, auth })
 const server = app.listen(env.port, () => {
   logger.info('API listening', { port: env.port, nodeEnv: env.nodeEnv, version })

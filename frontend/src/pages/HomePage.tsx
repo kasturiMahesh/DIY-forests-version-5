@@ -3,10 +3,10 @@ import { AccountLink } from '../auth/AccountLink'
 import accountLinkCss from '../styles/account-link.css?inline'
 import homeCss from '../styles/home.css?inline'
 import {
-  OFFLINE, PROGRAMS, REVIEWS, TRAINEES, TRAININGS, addDays, fmtRange, fmtShort, money, nextWeekdayDates,
+  OFFLINE, PROGRAMS, REVIEWS, TRAINEES, TRAININGS, money,
   type Art, type Currency, type Trainee, type Training,
 } from '../data'
-import { formatPrice, formatSessionDateTime, staticMoney } from '../api/format'
+import { calendarDaysInclusive, formatDateRange, formatDayMonth, formatPrice, formatSessionDateTime, formatTime, staticMoney } from '../api/format'
 import type { Money, PublicSession } from '../api/types'
 import { priceFor, useCatalog, type CatalogState } from '../catalog/catalog-context'
 import { WebinarBanner } from '../catalog/WebinarBanner'
@@ -317,19 +317,28 @@ function TraineesCarousel({ onOpen }: { onOpen: (trainee: Trainee, trigger: HTML
 }
 
 /* ---------------- Modal bodies ---------------- */
-function DateChipModal({ heading, art, intro, chips, chipLabel, emptyLabel, addLabel, onClose, onAdd, children }: {
+/**
+ * Date picker modal. The chips are real published dates from the catalog API (Stage 4B); while they
+ * load, if none are scheduled, or if the API is unreachable, the grid is replaced by a short message.
+ */
+export function DateChipModal({ heading, art, intro, chips, availability, chipLabel, emptyLabel, noneText, addLabel, detail, onRetry, onClose, onAdd, children }: {
   heading: string
   art: Art
   intro: ReactNode
-  chips: { label: string; small: string }[]
+  chips: { key: string; label: string; small: string }[]
+  availability: 'loading' | 'ready' | 'error'
   chipLabel: string
   emptyLabel: string
+  noneText: string
   addLabel: string
+  detail?: (index: number) => ReactNode
+  onRetry: () => void
   onClose: () => void
   onAdd: (index: number) => void
   children?: ReactNode
 }) {
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
+  const message = availability === 'loading' ? 'Loading dates…' : availability === 'error' ? 'We couldn’t load the dates.' : chips.length === 0 ? noneText : null
   return (
     <>
       <button className="icon-btn close-x" aria-label="Close" onClick={onClose}><CloseIcon /></button>
@@ -337,11 +346,18 @@ function DateChipModal({ heading, art, intro, chips, chipLabel, emptyLabel, addL
       <h3>{heading}</h3>{intro}
       {children}
       <p style={{ fontSize: '.82rem', fontWeight: 600, color: 'var(--ink)', marginBottom: 6 }}>{chipLabel}</p>
-      <div className="date-chip-grid">
-        {chips.map((chip, i) => <button key={chip.label} className={`chip-date${selectedIdx === i ? ' is-selected' : ''}`} data-idx={i} onClick={() => setSelectedIdx(i)}>{chip.label}<small>{chip.small}</small></button>)}
-      </div>
+      {message ? (
+        <p style={{ fontSize: '.88rem', margin: '10px 0 18px' }} role={availability === 'error' ? 'alert' : 'status'}>
+          {message}{availability === 'error' ? <> <button type="button" className="remove-link" onClick={onRetry}>Try again</button></> : null}
+        </p>
+      ) : (
+        <div className="date-chip-grid">
+          {chips.map((chip, i) => <button key={chip.key} className={`chip-date${selectedIdx === i ? ' is-selected' : ''}`} data-idx={i} onClick={() => setSelectedIdx(i)}>{chip.label}<small>{chip.small}</small></button>)}
+        </div>
+      )}
+      {selectedIdx !== null && detail ? <p style={{ fontSize: '.85rem', margin: '-8px 0 14px' }}>{detail(selectedIdx)}</p> : null}
       <button className="btn btn-primary btn-block" disabled={selectedIdx === null} onClick={() => { if (selectedIdx !== null) onAdd(selectedIdx) }}>
-        {selectedIdx === null ? emptyLabel : <><CartIconSm /> {addLabel}</>}
+        {selectedIdx === null ? (message ? 'No dates available yet' : emptyLabel) : <><CartIconSm /> {addLabel}</>}
       </button>
     </>
   )
@@ -582,19 +598,25 @@ export default function HomePage() {
     if (!modal) return null
     if (modal.kind === 'training') {
       const t = modal.training
-      const fridays = nextWeekdayDates(5, 6, 1)
+      // Real published cohorts: two 4-hour sessions on consecutive Fridays, shown in the visitor's zone.
+      const cohorts = catalog.trainingCohorts
+      const fridays = (index: number) => `${formatDayMonth(cohorts[index]!.sessions[0]!.startsAt)} & ${formatDayMonth(cohorts[index]!.sessions[1]!.startsAt)}`
       return (
         <DateChipModal
           heading={t.title}
           art={{ src: t.image, alt: t.imageAlt }}
           intro={<><p>{t.tagline}</p><p style={{ fontSize: '.85rem' }}><strong>Suitable for:</strong> {t.audience}</p></>}
-          chips={fridays.map((date) => ({ label: fmtShort(date), small: '6:30 PM' }))}
-          chipLabel="Choose your Friday evening session"
-          emptyLabel="Select a date to continue"
+          chips={cohorts.map((cohort) => ({ key: cohort.id, label: formatDayMonth(cohort.sessions[0]!.startsAt), small: `& ${formatDayMonth(cohort.sessions[1]!.startsAt)} · ${formatTime(cohort.sessions[0]!.startsAt)}` }))}
+          availability={catalog.status}
+          chipLabel="Choose your two Friday evening sessions"
+          emptyLabel="Select dates to continue"
+          noneText="New Friday dates will be announced soon."
           addLabel={`Add to cart — ${formatPrice(trainingPrice(t))}`}
+          detail={(index) => <>Two 4-hour sessions: {fridays(index)}, {formatTime(cohorts[index]!.sessions[0]!.startsAt)}–{formatTime(cohorts[index]!.sessions[0]!.endsAt)} (your time).</>}
+          onRetry={catalog.retry}
           onClose={closeModal}
           onAdd={(index) => {
-            addToCart({ title: t.title, ...cartPrice(trainingPrice(t)), meta: `${t.duration} · ${fmtShort(fridays[index])} · 6:30 PM`, art: { src: t.image, alt: t.imageAlt } })
+            addToCart({ title: t.title, ...cartPrice(trainingPrice(t)), meta: `${t.duration} · ${fridays(index)} · ${formatTime(cohorts[index]!.sessions[0]!.startsAt)}`, art: { src: t.image, alt: t.imageAlt } })
             closeModal()
           }}
         >
@@ -606,20 +628,25 @@ export default function HomePage() {
       )
     }
     if (modal.kind === 'offline') {
-      const batches = nextWeekdayDates(6, 6, 3) // Saturdays, 3 weeks apart
+      // Real published batches with their venue and start/end dates.
+      const batches = catalog.workshopBatches
+      const range = (index: number) => formatDateRange(batches[index]!.startsAt, batches[index]!.endsAt ?? batches[index]!.startsAt)
       return (
         <DateChipModal
           heading="Offline Workshop"
           art={{ src: OFFLINE.image, alt: OFFLINE.imageAlt }}
           intro={<p>Pick the 5-day batch that works for you. Food and accommodation are included.</p>}
-          chips={batches.map((date) => ({ label: fmtRange(date, addDays(date, 4)), small: '5 days' }))}
+          chips={batches.map((batch, index) => ({ key: batch.id, label: range(index), small: `${calendarDaysInclusive(batch.startsAt, batch.endsAt ?? batch.startsAt)} days` }))}
+          availability={catalog.status}
           chipLabel="Choose your batch"
           emptyLabel="Select a batch to continue"
+          noneText="New workshop batches will be announced soon."
           addLabel={`Add to cart — ${formatPrice(offlinePrice)}`}
+          detail={(index) => <>Venue: {batches[index]!.venue ?? 'to be confirmed'}</>}
+          onRetry={catalog.retry}
           onClose={closeModal}
           onAdd={(index) => {
-            const start = batches[index]
-            addToCart({ title: 'Offline Workshop', ...cartPrice(offlinePrice), meta: `${fmtRange(start, addDays(start, 4))} · in person`, art: { src: OFFLINE.image, alt: OFFLINE.imageAlt } })
+            addToCart({ title: 'Offline Workshop', ...cartPrice(offlinePrice), meta: `${range(index)} · ${batches[index]!.venue ?? 'in person'}`, art: { src: OFFLINE.image, alt: OFFLINE.imageAlt } })
             closeModal()
           }}
         />

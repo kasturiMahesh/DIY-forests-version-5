@@ -1,4 +1,4 @@
-import type { AdminMeResponse, AuthUser, MeResponse, Money, ProductType, PublicProduct, PublicProductRef, PublicSession, SessionListMeta, SessionQuery } from './types'
+import type { AdminMeResponse, AuthUser, MeResponse, Money, ProductType, PublicCohort, PublicProduct, PublicProductRef, PublicSession, SessionListMeta, SessionQuery } from './types'
 
 export type ApiErrorKind = 'network' | 'timeout' | 'http' | 'invalid-response'
 
@@ -36,7 +36,13 @@ export const isPublicProduct: Guard<PublicProduct> = (value): value is PublicPro
 
 export const isPublicSession: Guard<PublicSession> = (value): value is PublicSession =>
   isObject(value) && isString(value.id) && isInstant(value.startsAt) && (value.endsAt === null || isInstant(value.endsAt)) && isString(value.timezone) &&
-  (value.capacity === null || (Number.isInteger(value.capacity) && (value.capacity as number) > 0)) && isProductRef(value.product)
+  (value.capacity === null || (Number.isInteger(value.capacity) && (value.capacity as number) > 0)) && isProductRef(value.product) &&
+  (value.venue === undefined || isNullableString(value.venue))
+
+export const isPublicCohort: Guard<PublicCohort> = (value): value is PublicCohort =>
+  isObject(value) && isString(value.id) && isString(value.timezone) && (value.capacity === null || Number.isInteger(value.capacity)) && isProductRef(value.product) &&
+  Array.isArray(value.sessions) && value.sessions.length === 2 &&
+  value.sessions.every((session, index) => isObject(session) && session.sequence === index + 1 && isInstant(session.startsAt) && isInstant(session.endsAt))
 
 const isSessionMeta: Guard<SessionListMeta> = (value): value is SessionListMeta =>
   isObject(value) && isInstant(value.from) && Number.isInteger(value.limit) && Number.isInteger(value.count)
@@ -63,7 +69,7 @@ export type ApiClientOptions = {
 export function createApiClient({ baseUrl = '', fetch: fetchImpl = globalThis.fetch.bind(globalThis), timeoutMs = 10_000 }: ApiClientOptions = {}) {
   const root = `${baseUrl.replace(/\/+$/, '')}/api/v1`
 
-  type RequestOptions = { method?: 'GET' | 'POST' | 'PATCH'; body?: unknown; csrfToken?: string; signal?: AbortSignal | undefined }
+  type RequestOptions = { method?: 'GET' | 'POST' | 'PATCH' | 'DELETE'; body?: unknown; csrfToken?: string; signal?: AbortSignal | undefined }
 
   async function request(path: string, { method = 'GET', body: payload, csrfToken, signal }: RequestOptions = {}): Promise<unknown> {
     const timeout = AbortSignal.timeout(timeoutMs)
@@ -141,6 +147,16 @@ export function createApiClient({ baseUrl = '', fetch: fetchImpl = globalThis.fe
     async getSession(id: string, signal?: AbortSignal): Promise<PublicSession> {
       return expectData(await getJson(`/sessions/${encodeURIComponent(id)}`, signal), isPublicSession)
     },
+
+    /** Published upcoming online-training cohorts (two linked Fridays each). */
+    async listCohorts(query: { product?: string; limit?: number } = {}, signal?: AbortSignal): Promise<PublicCohort[]> {
+      const params = new URLSearchParams()
+      for (const [key, value] of Object.entries(query)) if (value !== undefined) params.set(key, String(value))
+      return expectList(await getJson(`/cohorts${params.size ? `?${params}` : ''}`, signal), isPublicCohort)
+    },
+
+    /** Low-level validated JSON request (used by the admin API module). */
+    send: request,
 
     // ---- authentication (Stage 4A) ----
 

@@ -86,7 +86,8 @@ You create and own the Neon project, and the connection strings stay on your mac
 | Table | Contents |
 |---|---|
 | `products` | UUIDv7 `id`; unique kebab-case `slug`; `name`; `type` (`ONLINE_TRAINING`, `OFFLINE_WORKSHOP`, `WEBINAR`); display texts; `price_amount numeric(12,2)` with `currency char(3)`; `is_active`; timestamps |
-| `sessions` | UUIDv7 `id`; `product_id`, which references `products` and blocks deleting a product that has sessions; `starts_at` / `ends_at` (`timestamptz`, end optional); IANA `timezone` (default `Asia/Kolkata`); optional `capacity`; `status` (`DRAFT`, `PUBLISHED`, `CANCELLED`); `internal_note`; timestamps. Unique on (`product_id`, `starts_at`). |
+| `sessions` | UUIDv7 `id`; `product_id`, which references `products` and blocks deleting a product that has sessions; `starts_at` / `ends_at` (`timestamptz`, end optional); IANA `timezone` (default `Asia/Kolkata`); optional `capacity`; `status` (`DRAFT`, `PUBLISHED`, `CANCELLED`); `internal_note`; optional `venue` (workshops); optional `cohort_id` + `cohort_sequence` (1 or 2) for online-training sessions; timestamps. Unique on (`product_id`, `starts_at`) and on (`cohort_id`, `cohort_sequence`). |
+| `training_cohorts` | One online-training enrolment unit: two linked 4-hour sessions on consecutive Fridays. `product_id`, `status`, `timezone`, optional `capacity`, `internal_note`, timestamps. Added by migration `20261016120000_schedule_management` (additive only). |
 
 These rules are enforced in the database by CHECK constraints written in the migration SQL, because Prisma's schema language can't express them:
 - price ≥ 0
@@ -95,6 +96,9 @@ These rules are enforced in the database by CHECK constraints written in the mig
 - name and timezone aren't blank
 - `ends_at` > `starts_at`
 - capacity > 0
+- a venue, if set, isn't blank
+- `cohort_id` and `cohort_sequence` are set together, and the sequence is 1 or 2
+- cohort capacity > 0 and cohort timezone isn't blank
 
 **Money:** amounts are exact decimals in major units (500.00 means USD 500), each with its own ISO 4217 currency. Nothing is converted between currencies, and no tax is applied or stored. PostgreSQL rounds input with more than two decimals, so validate amounts before writing them.
 
@@ -118,7 +122,7 @@ The seed is transcribed from the current website and upserts by stable keys, so 
   - the site showed the time in each visitor's own zone, so "IST" is an assumption;
   - no end time is stated;
   - "12 seats left" was a placeholder.
-- **Not seeded:** Friday training dates and workshop batches. The site generates them in the browser and they aren't a real schedule.
+- **Not seeded:** Friday training dates and workshop batches. Admins create them in the dashboard (see "Admin management" below); the site shows only what is published.
 
 Re-running the seed resets these rows to the values above. Don't use it on a database where an organizer has edited the catalog.
 
@@ -127,12 +131,16 @@ Re-running the seed resets these rows to the values above. Don't use it on a dat
 | Method and path | Response |
 |---|---|
 | `GET /api/v1/health` | `200 {"status":"ok","service":"diy-forests-api","version","time","uptimeSeconds"}`. No caching, and no dependencies. |
-| `GET /api/v1/products` | Active products. `Cache-Control: public, max-age=60`. |
+| `GET /api/v1/products` | Active products. |
 | `GET /api/v1/products/:slug` | One active product. |
-| `GET /api/v1/sessions` | Published, upcoming sessions of active products, soonest first. `Cache-Control: public, max-age=30`. |
-| `GET /api/v1/sessions/:id` | One published session of an active product. |
+| `GET /api/v1/sessions` | Published, upcoming **standalone** sessions (webinars, workshop batches, including `venue`) of active products, soonest first. Online-training sessions are listed only as cohorts. |
+| `GET /api/v1/sessions/:id` | One published standalone session of an active product. |
+| `GET /api/v1/cohorts?product=&from=&limit=` | Published, upcoming online-training cohorts of active products, each with both sessions (`sequence`, `startsAt`, `endsAt`). Fails closed: a cohort is hidden unless **both** of its sessions are published. |
+| `GET /api/v1/cohorts/:id` | One such cohort, or 404 `COHORT_NOT_FOUND`. |
 
-There are no write endpoints. `POST`, `PUT` and `DELETE` return a JSON 404.
+All catalog responses send `Cache-Control: public, max-age=15`, so an admin change reaches visitors within about 15 seconds.
+
+The public catalog has no write endpoints. `POST`, `PUT` and `DELETE` return a JSON 404. Changes go through the admin API below.
 
 ### Catalog API
 
@@ -334,7 +342,8 @@ Customers and staff sign in through the identity provider's own pages. This app 
 | `POST /api/v1/auth/logout` | signed in, CSRF | Revoke the session; returns `{ data: { logoutUrl } }` (the provider's sign-out page, or `null`) |
 | `GET /api/v1/me/profile` | signed in | Own profile |
 | `PATCH /api/v1/me/profile` | signed in, CSRF | `{ "displayName": "…" }` (or `null`) only. Any other field is a 400. |
-| `GET /api/v1/admin/me` | admin | Confirms admin access (management endpoints arrive in Stage 4B) |
+| `GET /api/v1/admin/me` | admin | Confirms admin access |
+| `/api/v1/admin/…` | admin, CSRF on writes | Product and schedule management (see "Admin management") |
 
 Customer data is reachable only through `/me` routes scoped to the session. No route takes another user's id.
 
@@ -435,3 +444,45 @@ The CHECK constraints are:
 - **audit_events:** action format.
 
 Every write runs through the UTC time-zone guard.
+
+## Admin management (Stage 4B)
+
+All routes sit under `/api/v1/admin` behind the admin guards from Stage 4A:
+- an admin session;
+- `X-CSRF-Token` plus an Origin check on writes;
+- `Cache-Control: no-store`;
+- rate limiting.
+
+Request bodies are strict, so unknown fields are a 400. Lists return `{ data, meta: { page, pageSize, total } }`, with `pageSize` capped at 100. Creates return 201. Nothing is ever hard-deleted. Every change writes an `audit_events` row (`PRODUCT_*`, `SESSION_*`, `COHORT_*`).
+
+| Method and path | Purpose |
+|---|---|
+| `GET /dashboard` | Product counts plus, per schedule type, upcoming published/draft counts and the next dates |
+| `GET, POST /products` | List (`?type=&active=&page=&pageSize=`) / create. New products start **inactive**. |
+| `GET, PATCH /products/:id` | Read (with schedule counts) / edit texts, slug or price (`{ amount: "149.00", currency: "INR" }`). The type is fixed after creation. |
+| `POST /products/:id/activate`, `/deactivate` | Show on, or hide from, the public catalog |
+| `GET, POST /sessions` | Webinars and workshop batches (`?type=WEBINAR\|OFFLINE_WORKSHOP&status=`). Online-training products are refused with `USE_COHORTS`. |
+| `GET, PATCH /sessions/:id` | Read / edit or reschedule. Cohort sessions are refused with `COHORT_MANAGED`, and cancelled ones with `INVALID_STATE`. |
+| `POST /sessions/:id/publish`, `/cancel` | DRAFT → PUBLISHED (needs an active product and a future start) / → CANCELLED (final, optional `reason`) |
+| `GET, POST /cohorts` | Online-training cohorts. Body: `{ productId, firstSessionStartsAt, secondSessionStartsAt?, capacity?, internalNote? }` |
+| `GET, PATCH /cohorts/:id` | Read / reschedule both sessions together |
+| `POST /cohorts/:id/publish`, `/cancel` | Publish or cancel the cohort **and both of its sessions** in one transaction |
+
+**Scheduling rules** (`src/modules/admin/schedule-rules.ts`), checked on the server; the dashboard mirrors them only for faster feedback:
+- Times are exact instants with an offset, for example `2026-11-06T18:30:00+05:30`. The organizer zone is `Asia/Kolkata`.
+- **Webinars:** the end time is optional and must be after the start. Capacity is optional (1–100000).
+- **Workshops:** the end time and a venue (up to 200 characters) are required.
+- **Online training:**
+  - The first session must be a **Friday** in IST, and in the future.
+  - Session 2 is always the first session + 7 calendar days at the same local time. A supplied `secondSessionStartsAt` must match, or the request fails with `SECOND_SESSION_MISMATCH`.
+  - Each session lasts 4 hours.
+  - Publishing re-checks that both sessions exist and still follow the rule, or fails with `COHORT_INCOMPLETE`.
+- New sessions can't start in the past. Two sessions of one product can't start at the same instant (409 `SESSION_CONFLICT`). The whole cohort write rolls back if either session collides.
+
+**Effect on the website:**
+- Drafts, cancelled items, past dates and anything belonging to an inactive product are never public.
+- Publishing, rescheduling or cancelling shows up on the public catalog within the 15-second cache window.
+
+**Not available until Stage 4C:** bookings, seats taken, customers and attendee lists. Capacity is stored as a limit only; the dashboard says so (`capacityTracking: "not_available_until_bookings_exist"`).
+
+**Migration:** `20261016120000_schedule_management` is additive (new nullable columns, the new table, constraints). Apply it with `npm run db:migrate:deploy` against a development database. It hasn't been applied to any live database by this project.

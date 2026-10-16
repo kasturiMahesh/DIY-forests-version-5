@@ -40,9 +40,12 @@ To see live catalog data, also run the backend: `cd backend && npm run dev`. The
 | API error or unreachable | "Schedule unavailable" with a **Try again** button; prices fall back to the existing static values, so the layout never breaks |
 | Published session | Real date, live countdown, "Limited to N seats" if capacity is set, and Reserve adds it to the demo cart |
 
+- **Online training dates (Stage 4B):** the "Choose a Friday" picker lists published cohorts from `GET /api/v1/cohorts?product=online-training`. Each chip is one enrolment: two 4-hour sessions on consecutive Fridays, for example "Fri, 13 Nov & Fri, 20 Nov · 6:30 PM", shown in the visitor's time zone.
+- **Workshop batches (Stage 4B):** the "Choose your start date" picker lists published `OFFLINE_WORKSHOP` sessions, with their real date range, number of days and venue.
+- While these load, if none are published, or if the API fails, the pickers say so ("Loading dates…", "New … will be announced soon.", "We couldn’t load the dates." with **Try again**), and the add-to-cart button stays disabled. No dates are generated in the browser any more.
+
 **What it doesn't drive:**
-- The Friday training dates and workshop batches are still **generated in the browser** (rolling next six Fridays and Saturdays). They are not database sessions.
-- Checkout is still the browser-only demo; nothing is booked or paid.
+- Checkout is still the browser-only demo; nothing is booked or paid, and seat counts aren't tracked until bookings exist.
 
 **Configuration:**
 
@@ -62,7 +65,7 @@ When `VITE_API_BASE_URL` points at another origin, add that site's origin to the
   |---|---|
   | `/sign-in` | Sign-in and create-account buttons, plus friendly messages for sign-in errors (`?error=…`) |
   | `/account` | Your own details, display name, session expiry and sign out. Bookings arrive in a later stage. |
-  | `/admin` | Staff sign-in, then the dashboard shell. Management tools arrive in Stage 4B and 4C. The page asks the server (`GET /api/v1/admin/me`) before showing anything, so a customer session only ever sees "no access". |
+  | `/admin/*` | Staff sign-in, then the admin dashboard (Stage 4B). The page asks the server (`GET /api/v1/admin/me`) before showing anything, so a customer session only ever sees "no access". |
 
   These pages reuse the webinar page's header, footer and buttons (`webinar.css`), plus a few form and card rules in `src/styles/auth.css`.
 - **Sign-in and session handling:**
@@ -72,10 +75,28 @@ When `VITE_API_BASE_URL` points at another origin, add that site's origin to the
   - State-changing requests send the CSRF token from `/auth/me` in `X-CSRF-Token`.
 - **Local sign-in with test identities:** follow "Local development with test identities" in `backend/README.md`.
 
+## Admin dashboard (Stage 4B)
+
+The admin dashboard lives in `src/admin/`, with tabs at `/admin`, `/admin/products`, `/admin/webinars`, `/admin/workshops` and `/admin/training`.
+
+| Tab | What staff can do |
+|---|---|
+| Overview | Product counts, plus upcoming published/draft dates per type, with the next few dates |
+| Products | Create (starts inactive), edit texts and exact price/currency, activate or deactivate. Nothing is deleted. |
+| Webinars | Create a draft, edit or reschedule, publish, cancel (with an optional reason). Capacity is optional. |
+| Workshops | The same, plus the required venue and end date |
+| Online training | Pick the first Friday and a start time. The form previews both 4-hour sessions one week apart. Both are published or cancelled together. |
+
+How it behaves:
+- Times are entered and shown in **organizer time (IST)**. `src/admin/admin-time.ts` converts them to exact instants with a `+05:30` offset, so the admin's computer zone never shifts a date.
+- Forms check the same rules as the server for quick feedback. The server stays the authority, and its error messages are shown as-is.
+- Writes send the CSRF token from `/auth/me`. A 401 switches the page to "session expired".
+- Bookings, seats taken and customer records aren't shown; they arrive in Stage 4C.
+
 ## Tests and checks
 
 ```bash
-npm test                                   # Vitest: API client (catalog + auth), formatting, catalog and sign-in/account/admin states
+npm test                                   # Vitest: API client, formatting, catalog/sign-in/admin states, admin rules, forms and date pickers
 npm run lint
 npx tsc -p tsconfig.app.json --noEmit
 npx tsc -p tsconfig.node.json --noEmit

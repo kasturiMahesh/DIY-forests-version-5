@@ -27,7 +27,18 @@ export type PublicSession = {
   /** Organizer's IANA zone (Asia/Kolkata). */
   timezone: string
   capacity: number | null
+  /** Venue of an in-person session (offline workshop); null/absent for online sessions. */
+  venue?: string | null
   product: PublicProductRef
+}
+
+/** A published online training: two 4-hour sessions on consecutive Fridays, offered as one. */
+export type PublicCohort = {
+  id: string
+  timezone: string
+  capacity: number | null
+  product: PublicProductRef
+  sessions: { sequence: 1 | 2; startsAt: string; endsAt: string }[]
 }
 
 export type SessionListMeta = { from: string; limit: number; count: number }
@@ -46,3 +57,31 @@ export type SessionInfo = { kind: Role; idleExpiresAt: string; absoluteExpiresAt
 export type MeResponse = { user: AuthUser; session: SessionInfo; csrfToken: string }
 
 export type AdminMeResponse = { user: AuthUser; session: SessionInfo }
+
+// ---- admin management (Stage 4B) ----
+
+export type ScheduleStatus = 'DRAFT' | 'PUBLISHED' | 'CANCELLED'
+export type AdminProductRef = { id: string; slug: string; name: string; type: ProductType; isActive: boolean }
+export type AdminProduct = {
+  id: string; slug: string; name: string; type: ProductType; summary: string | null; description: string | null; audience: string | null
+  durationLabel: string | null; price: Money; isActive: boolean; createdAt: string; updatedAt: string
+  scheduleCounts?: Record<ScheduleStatus, number>
+}
+export type AdminSession = {
+  id: string; startsAt: string; endsAt: string | null; timezone: string; capacity: number | null; status: ScheduleStatus
+  venue: string | null; internalNote: string | null; cohortId: string | null; cohortSequence: number | null; product: AdminProductRef
+  createdAt: string; updatedAt: string
+}
+export type AdminCohort = {
+  id: string; status: ScheduleStatus; timezone: string; capacity: number | null; internalNote: string | null; product: AdminProductRef
+  sessions: { id: string; sequence: number; startsAt: string; endsAt: string | null; status: ScheduleStatus }[]
+  createdAt: string; updatedAt: string
+}
+export type PageMeta = { page: number; pageSize: number; total: number }
+export type Paged<T> = { items: T[]; meta: PageMeta }
+export type DashboardSummary = {
+  products: { active: number; inactive: number }
+  upcoming: Record<ProductType, { published: number; draft: number; next: { id: string; startsAt: string; productName: string; kind: 'session' | 'cohort' }[] }>
+  cancelledUpcoming: number
+  capacityTracking: string
+}

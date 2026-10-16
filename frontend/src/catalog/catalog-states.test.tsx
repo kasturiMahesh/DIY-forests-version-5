@@ -16,7 +16,7 @@ const upcoming: PublicSession = {
   capacity: 40,
   product: { id: 'p', slug: 'monthly-webinar', name: 'Monthly Webinar', type: 'WEBINAR', price: { amount: '149.00', currency: 'INR' } },
 }
-const state = (overrides: Partial<CatalogState>): CatalogState => ({ status: 'loading', products: [], nextWebinar: null, retry: () => {}, ...overrides })
+const state = (overrides: Partial<CatalogState>): CatalogState => ({ status: 'loading', products: [], nextWebinar: null, workshopBatches: [], trainingCohorts: [], retry: () => {}, ...overrides })
 const fallback = { amount: '149.00', currency: 'INR' }
 
 const banner = (catalog: CatalogState) => renderToStaticMarkup(<WebinarBanner catalog={catalog} price={fallback} onReserve={() => {}} />)

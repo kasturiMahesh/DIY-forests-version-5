@@ -20,7 +20,7 @@ function App() {
           <Route path="/monthly-webinar.html" element={<WebinarPage />} />
           <Route path="/sign-in" element={<SignInPage />} />
           <Route path="/account" element={<AccountPage />} />
-          <Route path="/admin" element={<AdminPage />} />
+          <Route path="/admin/*" element={<AdminPage />} />
           <Route path="*" element={<HomePage />} />
         </Routes>
       </CatalogProvider>

@@ -2,17 +2,11 @@ import { useEffect, useState } from 'react'
 import { ApiError, api } from '../api/client'
 import type { AdminMeResponse } from '../api/types'
 import { useAuth, type AuthState } from '../auth/auth-context'
+import { AdminDashboard } from '../admin/AdminDashboard'
 import { SubPageLayout } from './SubPageLayout'
 
 export type AdminCheck = { state: 'checking' } | { state: 'ok'; data: AdminMeResponse } | { state: 'forbidden' } | { state: 'error' }
 
-// Management areas arrive in later, separately approved stages. Nothing here shows invented data.
-const UPCOMING = [
-  { title: 'Products & prices', note: 'Edit products, prices and availability. (Stage 4B)' },
-  { title: 'Schedule', note: 'Create, publish, reschedule and cancel webinars, workshop batches and training dates. (Stage 4B)' },
-  { title: 'Bookings', note: 'Search and manage bookings and capacity. (Stage 4C)' },
-  { title: 'Customers', note: 'Look up customers and their booking history. (Stage 4C)' },
-]
 
 /**
  * Admin dashboard shell. The page asks the server (GET /admin/me) before showing anything; the
@@ -91,16 +85,17 @@ export function AdminView({ auth, check }: { auth: AuthState; check: AdminCheck 
   const { user, session } = check.data
   return (
     <SubPageLayout title="Admin">
-      <section className="auth-card" style={{ maxWidth: 'none' }} aria-labelledby="admin-heading">
-        <span className="auth-tag">Admin dashboard</span>
-        <h1 id="admin-heading">Welcome{user.displayName ? `, ${user.displayName}` : ''}</h1>
-        <p>Signed in as {user.email}. Admin sessions end after 1 hour of inactivity (at the latest {new Date(session.absoluteExpiresAt).toLocaleString()}).</p>
-        <div className="admin-grid">
-          {UPCOMING.map((tile) => (
-            <div className="admin-tile" key={tile.title}><h3>{tile.title}</h3><p>Not available yet. {tile.note}</p></div>
-          ))}
+      <section className="auth-card admin-shell" aria-labelledby="admin-heading">
+        <div className="admin-head">
+          <div>
+            <span className="auth-tag">Admin dashboard</span>
+            <h1 id="admin-heading">Welcome{user.displayName ? `, ${user.displayName}` : ''}</h1>
+            <p>Signed in as {user.email}. Admin sessions end after 1 hour of inactivity (at the latest {new Date(session.absoluteExpiresAt).toLocaleString()}).</p>
+          </div>
+          <button className="btn btn-quiet" type="button" onClick={() => void auth.signOut()}>Sign out</button>
         </div>
-        <div className="auth-actions"><button className="btn btn-quiet" type="button" onClick={() => void auth.signOut()}>Sign out</button></div>
+        {auth.me ? <AdminDashboard csrfToken={auth.me.csrfToken} /> : null}
+        <p className="admin-footnote">Bookings and customer records are not available yet (next stage).</p>
       </section>
     </SubPageLayout>
   )

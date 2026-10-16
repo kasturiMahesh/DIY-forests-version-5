@@ -45,3 +45,34 @@ export function getCountdown(target: Date, now: Date): Countdown {
     complete: remaining === 0,
   }
 }
+
+const part = (instant: string | Date, options: Intl.DateTimeFormatOptions, timeZone?: string) =>
+  Object.fromEntries(new Intl.DateTimeFormat('en-US', { ...options, ...(timeZone ? { timeZone } : {}) }).formatToParts(typeof instant === 'string' ? new Date(instant) : instant).map((p) => [p.type, p.value]))
+
+/** "Fri, 6 Nov" in the visitor's zone (or `timeZone`). */
+export function formatDayMonth(instant: string | Date, timeZone?: string): string {
+  const p = part(instant, { weekday: 'short', day: 'numeric', month: 'short' }, timeZone)
+  return `${p.weekday}, ${p.day} ${p.month}`
+}
+
+/** "6:30 PM" in the visitor's zone (or `timeZone`). */
+export function formatTime(instant: string | Date, timeZone?: string): string {
+  const p = part(instant, { hour: 'numeric', minute: '2-digit', hour12: true }, timeZone)
+  return `${p.hour}:${p.minute} ${p.dayPeriod}`
+}
+
+/** The site's batch style: "17–21 Oct", or "28 Nov – 2 Dec" across months, in the visitor's zone. */
+export function formatDateRange(start: string | Date, end: string | Date, timeZone?: string): string {
+  const a = part(start, { day: 'numeric', month: 'short' }, timeZone)
+  const b = part(end, { day: 'numeric', month: 'short' }, timeZone)
+  return a.month === b.month ? `${a.day}–${b.day} ${b.month}` : `${a.day} ${a.month} – ${b.day} ${b.month}`
+}
+
+/** Calendar days covered, counting both the first and the last day (e.g. Sat–Wed = 5). */
+export function calendarDaysInclusive(start: string | Date, end: string | Date, timeZone?: string): number {
+  const day = (instant: string | Date) => {
+    const p = part(instant, { year: 'numeric', month: 'numeric', day: 'numeric' }, timeZone)
+    return Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day))
+  }
+  return Math.round((day(end) - day(start)) / 86_400_000) + 1
+}

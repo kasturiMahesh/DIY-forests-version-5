@@ -1,12 +1,13 @@
-import type { Product, Session } from '../../generated/prisma/client.js'
-import type { PublicProduct, PublicProductRef, PublicSession } from './catalog.types.js'
+import type { Product, Session, TrainingCohort } from '../../generated/prisma/client.js'
+import type { PublicCohort, PublicProduct, PublicProductRef, PublicSession } from './catalog.types.js'
 
 // Explicit field picking: anything not listed here (isActive, status, internalNote, createdAt, ...)
 // can never reach a client, even if the schema grows.
 
 type ProductRow = Pick<Product, 'id' | 'slug' | 'name' | 'type' | 'summary' | 'description' | 'audience' | 'durationLabel' | 'priceAmount' | 'currency'>
 type ProductRefRow = Pick<Product, 'id' | 'slug' | 'name' | 'type' | 'priceAmount' | 'currency'>
-type SessionRow = Pick<Session, 'id' | 'startsAt' | 'endsAt' | 'timezone' | 'capacity'> & { product: ProductRefRow }
+type SessionRow = Pick<Session, 'id' | 'startsAt' | 'endsAt' | 'timezone' | 'capacity' | 'venue'> & { product: ProductRefRow }
+type CohortRow = Pick<TrainingCohort, 'id' | 'timezone' | 'capacity'> & { product: ProductRefRow; sessions: Pick<Session, 'cohortSequence' | 'startsAt' | 'endsAt'>[] }
 
 const money = (row: Pick<Product, 'priceAmount' | 'currency'>) => ({ amount: row.priceAmount.toFixed(2), currency: row.currency })
 
@@ -35,7 +36,18 @@ export function toPublicSession(row: SessionRow): PublicSession {
     endsAt: row.endsAt ? row.endsAt.toISOString() : null,
     timezone: row.timezone,
     capacity: row.capacity,
+    venue: row.venue,
     product: toPublicProductRef(row.product),
+  }
+}
+
+export function toPublicCohort(row: CohortRow): PublicCohort {
+  return {
+    id: row.id,
+    timezone: row.timezone,
+    capacity: row.capacity,
+    product: toPublicProductRef(row.product),
+    sessions: row.sessions.map((session) => ({ sequence: session.cohortSequence as 1 | 2, startsAt: session.startsAt.toISOString(), endsAt: session.endsAt!.toISOString() })),
   }
 }
 
@@ -46,5 +58,10 @@ export const PRODUCT_SELECT = {
 export const PRODUCT_REF_SELECT = { id: true, slug: true, name: true, type: true, priceAmount: true, currency: true } as const
 
 export const SESSION_SELECT = {
-  id: true, startsAt: true, endsAt: true, timezone: true, capacity: true, product: { select: PRODUCT_REF_SELECT },
+  id: true, startsAt: true, endsAt: true, timezone: true, capacity: true, venue: true, product: { select: PRODUCT_REF_SELECT },
+} as const
+
+export const COHORT_SELECT = {
+  id: true, timezone: true, capacity: true, product: { select: PRODUCT_REF_SELECT },
+  sessions: { select: { cohortSequence: true, startsAt: true, endsAt: true }, orderBy: { cohortSequence: 'asc' as const } },
 } as const

@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react'
-import type { Money, PublicProduct, PublicSession } from '../api/types'
+import type { Money, PublicCohort, PublicProduct, PublicSession } from '../api/types'
 
 export type CatalogStatus = 'loading' | 'ready' | 'error'
 
@@ -9,10 +9,14 @@ export type CatalogState = {
   products: PublicProduct[]
   /** The soonest PUBLISHED upcoming webinar, or null if none is scheduled. Only meaningful when ready. */
   nextWebinar: PublicSession | null
+  /** Published upcoming offline-workshop batches (real dates and venues from the admin). */
+  workshopBatches: PublicSession[]
+  /** Published upcoming online-training cohorts (two linked Fridays each). */
+  trainingCohorts: PublicCohort[]
   retry: () => void
 }
 
-export const CatalogContext = createContext<CatalogState>({ status: 'loading', products: [], nextWebinar: null, retry: () => {} })
+export const CatalogContext = createContext<CatalogState>({ status: 'loading', products: [], nextWebinar: null, workshopBatches: [], trainingCohorts: [], retry: () => {} })
 
 export function useCatalog(): CatalogState {
   return useContext(CatalogContext)
