@@ -2,7 +2,9 @@
 
 Backend for the DIY Forests training platform: a Node.js + TypeScript + Express modular monolith with a versioned REST API under `/api/v1`.
 
-**Stage 2 (current):** the Stage 1 skeleton plus the PostgreSQL catalog schema (products and sessions), migrations and a development seed. There are no catalog endpoints, authentication, bookings, payments or email yet, and the React frontend doesn't call this API.
+**Stage 3 (current):** the Stage 1 skeleton, the Stage 2 PostgreSQL catalog schema, migrations and development seed, and a **read-only catalog API** (products and published sessions) that the React frontend now reads. There's no authentication, booking, payment, email or write endpoint yet.
+
+> **Live Neon status: not yet verified.** All database testing so far has used in-memory PostgreSQL (PGlite). Neon counts as verified only after `npm run db:migrate:deploy`, `npm run db:seed` and `npm run db:migrate:status` succeed with your own `backend/.env`, and `GET /api/v1/products` then returns data. See "Checking a live database" below.
 
 ## Requirements
 
@@ -48,7 +50,7 @@ Configuration is validated at startup, and the process exits with code 1 and a c
 | `DATABASE_URL` | none | Runtime PostgreSQL connection (on Neon, the **pooled** string). Secret. Needed by the seed and, in later stages, the API. |
 | `DIRECT_DATABASE_URL` | none | Used only by the Prisma CLI for migrations (on Neon, the **direct** string). Secret. |
 
-`npm run dev` and `npm start` don't need a database yet.
+`npm run dev` and `npm start` work without a database. Without `DATABASE_URL`, `/api/v1/health` still answers, the catalog endpoints return `503 CATALOG_UNAVAILABLE`, and the startup log says "Database not configured".
 
 ## Database setup (Neon, development)
 
@@ -123,6 +125,74 @@ Re-running the seed resets these rows to the values above. Don't use it on a dat
 | Method and path | Response |
 |---|---|
 | `GET /api/v1/health` | `200 {"status":"ok","service":"diy-forests-api","version","time","uptimeSeconds"}`. No caching, and no dependencies. |
+| `GET /api/v1/products` | Active products. `Cache-Control: public, max-age=60`. |
+| `GET /api/v1/products/:slug` | One active product. |
+| `GET /api/v1/sessions` | Published, upcoming sessions of active products, soonest first. `Cache-Control: public, max-age=30`. |
+| `GET /api/v1/sessions/:id` | One published session of an active product. |
+
+There are no write endpoints. `POST`, `PUT` and `DELETE` return a JSON 404.
+
+### Catalog API
+
+Successful responses use one envelope: `{ "data": … }` for single items, and `{ "data": [ … ] }` for lists (sessions add `meta`).
+
+**`GET /api/v1/products`** accepts one optional query parameter, `type` (`ONLINE_TRAINING`, `OFFLINE_WORKSHOP` or `WEBINAR`). Products are ordered by type, then name.
+
+```json
+{
+  "data": [
+    {
+      "id": "0199…",
+      "slug": "online-training",
+      "name": "Online Training",
+      "type": "ONLINE_TRAINING",
+      "summary": "Know everything about the Method — spread over 2 days.",
+      "description": "A complete live training to understand the method and learn how to create a native forest from start to finish.",
+      "audience": "Anyone who wants to know the full method, start to finish.",
+      "durationLabel": "8 hours · 2 days",
+      "price": { "amount": "500.00", "currency": "USD" }
+    }
+  ]
+}
+```
+
+**`GET /api/v1/sessions`** accepts these optional query parameters:
+
+| Parameter | Meaning | Default |
+|---|---|---|
+| `type` | Product type, as above | — |
+| `product` | Product slug | — |
+| `from` | ISO 8601 instant **with `Z` or an offset**. Sessions starting at or after it are returned. | The server's current time |
+| `limit` | 1–100 | 50 |
+
+```json
+{
+  "data": [
+    {
+      "id": "0199…",
+      "startsAt": "2026-11-06T13:00:00.000Z",
+      "endsAt": null,
+      "timezone": "Asia/Kolkata",
+      "capacity": 40,
+      "product": { "id": "0199…", "slug": "monthly-webinar", "name": "Monthly Webinar", "type": "WEBINAR", "price": { "amount": "149.00", "currency": "INR" } }
+    }
+  ],
+  "meta": { "from": "2026-10-16T04:51:31.917Z", "limit": 50, "count": 1 }
+}
+```
+
+An empty schedule returns `200` with `"data": []`. With today's seed data that's the expected result, because the only seeded session is the expired DRAFT webinar.
+
+**Contract rules:**
+- **Prices:** `price.amount` is an exact decimal string with two decimals, and `price.currency` is an ISO 4217 code. No currency conversion and no tax.
+- **Times:** `startsAt` and `endsAt` are UTC ISO strings ending in `Z`. Each is one fixed instant; clients format it in the visitor's time zone. `timezone` is the organizer's zone.
+- **What's public:** inactive products and DRAFT or CANCELLED sessions never appear. Neither do `internal_note`, `is_active`, `status` or timestamps. An inactive or unknown slug gets the same `404 PRODUCT_NOT_FOUND`; a hidden or unknown session id gets `404 SESSION_NOT_FOUND`.
+- **Past sessions:** `GET /sessions/:id` also returns a *past* published session, so clients compare `startsAt` with the current time. The list hides past sessions unless you pass an earlier `from`.
+- **Unknown query parameters** are rejected with `400 INVALID_QUERY` rather than ignored, which catches typos.
+- **Malformed path values** (a bad slug, a non-UUID id) return `400 INVALID_PATH`. Error messages name the parameter and the rule but never echo the submitted value.
+- **Database failures** return `503 CATALOG_UNAVAILABLE` with a generic message. This covers no database configured, an unreachable database, a missing migration, and a non-UTC session refused by the time-zone guard. The underlying error is logged server-side only, under `cause`.
+
+Code: `src/modules/catalog/` contains `catalog.routes.ts` (HTTP and validation), `catalog.repository.ts` (all Prisma queries, plus the UTC check before the first query), `catalog.serializers.ts` (explicit public fields) and `catalog.types.ts` (the contract).
 
 Every error uses one JSON shape:
 
@@ -132,11 +202,12 @@ Every error uses one JSON shape:
 
 | Status | Code |
 |---|---|
-| 404 | `NOT_FOUND` |
-| 400 | `INVALID_JSON` |
+| 404 | `NOT_FOUND`, `PRODUCT_NOT_FOUND`, `SESSION_NOT_FOUND` |
+| 400 | `INVALID_JSON`, `INVALID_QUERY`, `INVALID_PATH` |
 | 413 | `PAYLOAD_TOO_LARGE` (bodies over 100 kb) |
 | 415 | `UNSUPPORTED_ENCODING` |
 | 500 | `INTERNAL_ERROR` |
+| 503 | `CATALOG_UNAVAILABLE` |
 
 Unexpected errors are logged server-side with their stack trace. Clients get only a generic message.
 
@@ -171,10 +242,39 @@ src/
   generated/prisma/      generated Prisma Client (git-ignored)
   lib/                   logger (JSON lines), HttpError, time-zone helpers
   middleware/            request-id, not-found, error-handler
+  modules/catalog/       read-only catalog: routes, repository (Prisma), serializers, contract types
   routes/health.ts
 tests/                   Vitest + Supertest; tests/db/* run against in-memory PGlite
 ```
 
-Database access stays in `src/db/`, separate from HTTP routes. No route uses the database yet.
+HTTP handlers never call Prisma directly. Routes validate input and go through a repository interface, which `createApp({ catalog })` receives, so tests can inject a real PGlite-backed repository or a failing stub.
+
+## Running the backend and frontend together
+
+```bash
+# terminal 1: API on http://localhost:3000
+cd backend
+npm run dev
+
+# terminal 2: site on http://localhost:5173, with /api proxied to :3000
+cd frontend
+npm run dev
+```
+
+- **Without `backend/.env`:** the site still renders, using the existing static prices. The webinar banner shows "Schedule unavailable" with a **Try again** button, because the catalog returns 503.
+- **With a database but no published session:** the banner shows "Next date to be announced". This is the expected result with today's seed.
+
+## Checking a live database (Neon)
+
+These steps tell you whether Neon has actually been verified. Run them after the steps in "Database setup":
+
+```bash
+npm run db:migrate:status          # "Database schema is up to date!"
+npm run db:seed                    # "Seeded 5 products and 1 session(s) into <host>/<db>."
+npm run dev                        # log line "Database configured" (host and database name only)
+curl http://localhost:3000/api/v1/products   # three products, prices as decimal strings
+```
+
+A `503 CATALOG_UNAVAILABLE` response means the API could not use the database. The server log shows why, in the entry's `cause` field. Typical causes are a wrong URL, unapplied migrations, or a non-UTC session.
 
 Business modules (catalog, booking, identity, notifications, admin) will go under `src/modules/` in later stages.

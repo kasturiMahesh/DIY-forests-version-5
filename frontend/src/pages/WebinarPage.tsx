@@ -1,29 +1,29 @@
 import { useEffect, useState } from 'react'
+import { formatPrice, formatSessionDateTime, staticMoney } from '../api/format'
+import { priceFor, useCatalog, type CatalogState } from '../catalog/catalog-context'
+import { Countdown } from '../catalog/Countdown'
 import webinarCss from '../styles/webinar.css?inline'
-import { formatWebinarDateTime, getWebinarCountdown, webinar, webinarResourceCards } from '../webinarData'
+import { webinar, webinarResourceCards } from '../webinarData'
 
 const RESERVE_URL = '/?reserve=webinar#webinar'
 const DISMISS_KEY = 'diy-webinar-booking-dismissed'
+// Same look as the home page's disabled .btn-primary (opacity .75, not-allowed cursor).
+const unavailableButton = { opacity: 0.75, cursor: 'not-allowed' } as const
 
-function Countdown() {
-  const [now, setNow] = useState(() => new Date())
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(new Date()), 1000)
-    return () => window.clearInterval(timer)
-  }, [])
-  const value = getWebinarCountdown(now)
-  if (value.complete) return <div className="countdown-status" id="heroCountdown" aria-label="Time until the webinar" aria-live="off">Webinar starting soon</div>
-  const units: [number, string][] = [[value.days, 'DAYS'], [value.hours, 'HOURS'], [value.minutes, 'MINUTES'], [value.seconds, 'SECONDS']]
-  return (
-    <div className="countdown" id="heroCountdown" aria-label="Time until the webinar" aria-live="off">
-      {units.map(([amount, label]) => <span key={label} className="countdown-item"><strong>{String(amount).padStart(2, '0')}</strong><span>{label}</span></span>)}
-    </div>
-  )
+/** Reserve link while a published session exists; otherwise a retry or a non-interactive placeholder. */
+function ReserveAction({ catalog, label }: { catalog: CatalogState; label: string }) {
+  if (catalog.status === 'error') return <button className="btn" type="button" onClick={catalog.retry}>Try again</button>
+  if (catalog.status === 'ready' && catalog.nextWebinar) return <a className="btn" data-reserve-webinar href={RESERVE_URL}>{label}</a>
+  return <span className="btn" aria-disabled="true" style={unavailableButton}>{catalog.status === 'loading' ? label : 'Dates coming soon'}</span>
 }
 
 export default function WebinarPage() {
-  const dateLabel = formatWebinarDateTime(webinar.date)
-  const priceLabel = `₹${webinar.price.toLocaleString('en-IN')}`
+  const catalog = useCatalog()
+  const session = catalog.status === 'ready' ? catalog.nextWebinar : null
+  const dateLabel = session
+    ? formatSessionDateTime(session.startsAt) // the one real instant, in the visitor's own time zone
+    : { loading: 'Loading webinar date', error: 'Schedule unavailable', ready: 'Date to be announced' }[catalog.status]
+  const priceLabel = formatPrice(session?.product.price ?? priceFor(catalog, 'monthly-webinar', staticMoney(webinar.price, 'INR')))
   const [dismissed, setDismissed] = useState(() => {
     try { return sessionStorage.getItem(DISMISS_KEY) === 'true' } catch { return false }
   })
@@ -34,11 +34,12 @@ export default function WebinarPage() {
   useEffect(() => {
     const updateSticky = () => {
       const threshold = document.documentElement.scrollHeight * 0.18
-      setStickyVisible(!dismissed && window.scrollY > 0 && window.scrollY + window.innerHeight >= threshold)
+      // The booking bar only appears when there is a real session to reserve.
+      setStickyVisible(!dismissed && session !== null && window.scrollY > 0 && window.scrollY + window.innerHeight >= threshold)
     }
     window.addEventListener('scroll', updateSticky, { passive: true })
     return () => window.removeEventListener('scroll', updateSticky)
-  }, [dismissed])
+  }, [dismissed, session])
 
   return (
     <>
@@ -61,8 +62,14 @@ export default function WebinarPage() {
               <p className="hero-subheading">A simple introduction to growing native forests.</p>
               <p className="hero-copy">Explore the basics of the Miyawaki Method through practical examples before joining our live Q&amp;A webinar.</p>
               <div className="event-meta"><span id="heroWebinarDate">{dateLabel}</span><span id="heroWebinarFormat">{webinar.format}</span><span id="heroWebinarPrice">{priceLabel}</span></div>
-              <Countdown />
-              <a className="btn" data-reserve-webinar href={RESERVE_URL}>Reserve My Seat — {priceLabel}</a>
+              {session ? (
+                <Countdown target={session.startsAt} id="heroCountdown" containerClass="countdown" itemClass="countdown-item" statusClass="countdown-status" />
+              ) : catalog.status === 'loading' ? null : (
+                <div className="countdown-status" id="heroCountdown" role={catalog.status === 'error' ? 'alert' : undefined}>
+                  {catalog.status === 'error' ? 'We couldn’t load the webinar schedule.' : 'The next webinar date hasn’t been announced yet.'}
+                </div>
+              )}
+              <ReserveAction catalog={catalog} label={`Reserve My Seat — ${priceLabel}`} />
             </div>
             <div className="hero-image"><iframe src="https://www.youtube.com/embed/8xEZv7Pbes0?controls=1" title="Learn the Miyawaki Method — Monthly Webinar" allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture" referrerPolicy="strict-origin-when-cross-origin" allowFullScreen /></div>
           </div>
@@ -96,7 +103,7 @@ export default function WebinarPage() {
             <div className="qa-details">
               <div><strong id="qaWebinarDate">{dateLabel}</strong><br /><span id="qaWebinarFormat">{webinar.format}</span></div>
               <span className="qa-price" id="qaWebinarPrice">{priceLabel}</span>
-              <a className="btn" data-reserve-webinar href={RESERVE_URL}>Reserve My Seat</a>
+              <ReserveAction catalog={catalog} label="Reserve My Seat" />
             </div>
           </div>
         </section>
@@ -114,7 +121,7 @@ export default function WebinarPage() {
         </div>
         <div className="sticky-action">
           <span className="sticky-price" id="stickyWebinarPrice">{priceLabel}</span>
-          <a className="btn" data-reserve-webinar href={RESERVE_URL}>Reserve My Seat</a>
+          <ReserveAction catalog={catalog} label="Reserve My Seat" />
         </div>
         <button className="sticky-close" id="closeStickyBooking" type="button" aria-label="Close webinar booking bar" onClick={() => {
           setDismissed(true)

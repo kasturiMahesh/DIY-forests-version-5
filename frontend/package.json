@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "parity:serve-original": "node tests/parity/serve-original.cjs",
     "parity:visual": "node tests/parity/visual.cjs",
-    "parity:functional": "node tests/parity/functional.cjs"
+    "parity:functional": "node tests/parity/functional.cjs",
+    "test": "vitest run"
   },
   "dependencies": {
     "react": "^19.2.8",
@@ -28,6 +29,7 @@
     "pngjs": "^7.0.0",
     "serve-handler": "^6.1.7",
     "typescript": "~6.0.2",
-    "vite": "^8.3.0"
+    "vite": "^8.3.0",
+    "vitest": "5.0.4"
   }
 }

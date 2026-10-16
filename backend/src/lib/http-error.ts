@@ -2,12 +2,14 @@
 export class HttpError extends Error {
   override name = 'HttpError'
 
+  /** `cause` is logged server-side for 5xx responses and never sent to the client. */
   constructor(
     readonly status: number,
     readonly code: string,
     message: string,
+    options?: { cause?: unknown },
   ) {
-    super(message)
+    super(message, options)
   }
 }
 

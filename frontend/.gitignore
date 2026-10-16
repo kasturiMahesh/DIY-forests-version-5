@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Local environment files (VITE_* values are public, but keep local settings out of git)
+.env
+.env.*
+!.env.example

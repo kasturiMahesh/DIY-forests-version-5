@@ -1,7 +1,10 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { createApp } from './app.js'
+import { describeDatabaseUrl, loadDatabaseConfig } from './config/database.js'
 import { ConfigError, loadEnv } from './config/env.js'
+import { createPrismaClient, type PrismaClient } from './db/client.js'
 import { createLogger } from './lib/logger.js'
+import { createCatalogRepository } from './modules/catalog/catalog.repository.js'
 
 // Local development convenience: load backend/.env if present (Node's built-in loader, no dependency).
 if (existsSync('.env')) process.loadEnvFile('.env')
@@ -21,14 +24,29 @@ try {
 }
 
 const logger = createLogger(env.nodeEnv)
-const app = createApp({ env, version, logger })
+
+// The database is optional at startup: without DATABASE_URL the API still serves /health and
+// answers catalog requests with 503, so local frontend work never hard-depends on a database.
+let prisma: PrismaClient | null = null
+try {
+  const { url } = loadDatabaseConfig()
+  prisma = createPrismaClient(url)
+  logger.info('Database configured', { database: describeDatabaseUrl(url) })
+} catch (error) {
+  if (!(error instanceof ConfigError)) throw error
+  logger.warn('Database not configured; catalog endpoints will return 503', { reason: error.message })
+}
+
+const app = createApp({ env, version, logger, catalog: prisma ? createCatalogRepository(prisma) : null })
 const server = app.listen(env.port, () => {
   logger.info('API listening', { port: env.port, nodeEnv: env.nodeEnv, version })
 })
 
 function shutdown(signal: string) {
   logger.info('Shutting down', { signal })
-  server.close(() => process.exit(0))
+  server.close(() => {
+    void (prisma ? prisma.$disconnect() : Promise.resolve()).finally(() => process.exit(0))
+  })
   // Force exit if open connections keep the server alive.
   setTimeout(() => process.exit(1), 10_000).unref()
 }

@@ -30,11 +30,14 @@ export function errorHandler(logger: Logger): ErrorRequestHandler {
     const message = known?.message ?? 'An unexpected error occurred'
 
     if (status >= 500) {
+      const describe = (value: unknown) => (value instanceof Error ? { name: value.name, message: value.message, stack: value.stack } : String(value))
       logger.error('Unhandled error', {
         requestId,
         method: req.method,
         path: req.path,
-        error: err instanceof Error ? { name: err.name, message: err.message, stack: err.stack } : String(err),
+        error: describe(err),
+        // Server-side only: the underlying failure behind a client-safe HttpError (e.g. a database error).
+        ...(err instanceof Error && err.cause !== undefined ? { cause: describe(err.cause) } : {}),
       })
     }
 

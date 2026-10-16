@@ -1,27 +1,10 @@
+// The webinar's date now comes only from the catalog API (a PUBLISHED session). There is
+// deliberately no hard-coded date here: the old one (13 Oct 2026) had passed and was shown in
+// each visitor's own zone. `price` is only a fallback for when the API cannot be reached.
 export const webinar = {
   title: 'Monthly Webinar',
-  date: new Date(2026, 9, 13, 18, 30, 0, 0),
   price: 149,
   format: 'Live Online',
-}
-
-export function formatWebinarDateTime(date: Date) {
-  const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-  const time = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
-  return `${weekdays[date.getDay()]}, ${date.getDate()} ${months[date.getMonth()]} · ${time}`
-}
-
-export function getWebinarCountdown(now: Date) {
-  const remaining = Math.max(0, webinar.date.getTime() - now.getTime())
-  const seconds = Math.floor(remaining / 1000)
-  return {
-    days: Math.floor(seconds / 86400),
-    hours: Math.floor((seconds % 86400) / 3600),
-    minutes: Math.floor((seconds % 3600) / 60),
-    seconds: seconds % 60,
-    complete: remaining === 0,
-  }
 }
 
 export const webinarResourceCards = [

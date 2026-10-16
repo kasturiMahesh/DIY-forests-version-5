@@ -4,7 +4,11 @@ import {
   OFFLINE, PROGRAMS, REVIEWS, TRAINEES, TRAININGS, addDays, fmtRange, fmtShort, money, nextWeekdayDates,
   type Art, type Currency, type Trainee, type Training,
 } from '../data'
-import { formatWebinarDateTime, getWebinarCountdown, webinar } from '../webinarData'
+import { formatPrice, formatSessionDateTime, staticMoney } from '../api/format'
+import type { Money, PublicSession } from '../api/types'
+import { priceFor, useCatalog, type CatalogState } from '../catalog/catalog-context'
+import { WebinarBanner } from '../catalog/WebinarBanner'
+import { webinar } from '../webinarData'
 
 /* ---------------- Icons (same paths as the original page) ---------------- */
 const CheckIconSm = () => <svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" /></svg>
@@ -34,8 +38,21 @@ const reduceMotion = typeof window !== 'undefined' && window.matchMedia?.('(pref
 /* ---------------- Cart state ---------------- */
 type CartItem = { cartId: string; title: string; price: number; currency: Currency; meta: string; art: Art }
 const CART_KEY = 'afforestt_training_cart_v1'
-const SEATS_KEY = 'afforestt_webinar_seats_v1'
-const SEATS_TOTAL = 40
+
+/* ---------------- Catalog prices ---------------- */
+const isCartCurrency = (currency: string): currency is Currency => currency === 'USD' || currency === 'INR'
+
+/**
+ * The product's price from the catalog API once loaded; until then (or if the API is
+ * unreachable) the site's existing static price, so the layout and figures never break.
+ */
+function catalogPrice(catalog: CatalogState, slug: string, fallback: Money): Money {
+  const price = priceFor(catalog, slug, fallback)
+  return isCartCurrency(price.currency) ? price : fallback // the demo cart only supports USD and INR
+}
+
+/** The demo cart keeps numbers (it is browser-only); exact strings stay the source for display. */
+const cartPrice = (price: Money) => ({ price: Number(price.amount), currency: price.currency as Currency })
 
 function loadCart(): CartItem[] {
   try {
@@ -134,22 +151,6 @@ function OfflineGallery() {
       <div className="offline-gallery-dots" id="offlineGalleryDots" role="group" aria-label="Choose a workshop image">
         {images.map((image, i) => <button key={image.src} className={`offline-gallery-dot${i === index ? ' is-active' : ''}`} type="button" aria-label={`Show workshop image ${i + 1}`} aria-current={i === index ? 'true' : 'false'} data-index={i} onClick={() => show(i)} />)}
       </div>
-    </div>
-  )
-}
-
-function WebinarCountdown() {
-  const [now, setNow] = useState(() => new Date())
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(new Date()), 1000)
-    return () => window.clearInterval(timer)
-  }, [])
-  const countdown = getWebinarCountdown(now)
-  if (countdown.complete) return <div className="webinar-countdown-status" id="homeWebinarCountdown" aria-label="Time until the webinar" aria-live="off">Webinar starting soon</div>
-  const units: [number, string][] = [[countdown.days, 'DAYS'], [countdown.hours, 'HOURS'], [countdown.minutes, 'MINUTES'], [countdown.seconds, 'SECONDS']]
-  return (
-    <div className="webinar-countdown" id="homeWebinarCountdown" aria-label="Time until the webinar" aria-live="off">
-      {units.map(([value, label]) => <span key={label} className="webinar-countdown-item"><strong>{String(value).padStart(2, '0')}</strong><span>{label}</span></span>)}
     </div>
   )
 }
@@ -436,14 +437,7 @@ export default function HomePage() {
   const [payMethod, setPayMethod] = useState('upi')
   const [processing, setProcessing] = useState(false)
   const [confetti, setConfetti] = useState<ConfettiPiece[]>([])
-  const [seatsLeft, setSeatsLeft] = useState(() => {
-    try {
-      const saved = localStorage.getItem(SEATS_KEY)
-      return saved !== null ? parseInt(saved, 10) : 12
-    } catch {
-      return 12
-    }
-  })
+  const catalog = useCatalog()
   const toastTimer = useRef<number | undefined>(undefined)
   const modalBodyRef = useRef<HTMLDivElement>(null)
   const cartBtnRef = useRef<HTMLButtonElement>(null)
@@ -488,23 +482,24 @@ export default function HomePage() {
     })
   }, [])
 
-  const reserveWebinar = useCallback(() => {
-    if (seatsLeft <= 0) return
-    const remaining = seatsLeft - 1
-    setSeatsLeft(remaining)
-    try { localStorage.setItem(SEATS_KEY, String(remaining)) } catch { /* storage unavailable */ }
-    addToCart({ title: webinar.title, price: webinar.price, currency: 'INR', meta: formatWebinarDateTime(webinar.date), art: { src: TRAININGS[0].image, alt: TRAININGS[0].imageAlt } })
-  }, [addToCart, seatsLeft])
+  // Adds the published session to the demo cart (browser-only; no booking or seat is reserved yet).
+  const reserveWebinar = useCallback((session: PublicSession) => {
+    const price = isCartCurrency(session.product.price.currency) ? session.product.price : staticMoney(webinar.price, 'INR')
+    addToCart({ title: session.product.name, ...cartPrice(price), meta: formatSessionDateTime(session.startsAt), art: { src: TRAININGS[0].image, alt: TRAININGS[0].imageAlt } })
+  }, [addToCart])
 
-  // ?reserve=webinar (from the webinar page) books a seat on arrival, like the original.
+  // ?reserve=webinar (from the webinar page) adds the webinar on arrival, like the original,
+  // but only once the catalog confirms a published upcoming session exists.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
-    if (reserveHandled.current || params.get('reserve') !== 'webinar') return
+    if (reserveHandled.current || params.get('reserve') !== 'webinar' || catalog.status === 'loading') return
     reserveHandled.current = true
-    reserveWebinar()
-    // Drop the query so a refresh doesn't book a second seat.
+    // One-time sync with external inputs (the URL and the network result), guarded by reserveHandled.
+    // oxlint-disable-next-line react/set-state-in-effect
+    if (catalog.status === 'ready' && catalog.nextWebinar) reserveWebinar(catalog.nextWebinar)
+    // Drop the query so a refresh doesn't add it a second time.
     window.history.replaceState(null, '', `${window.location.pathname}${window.location.hash}`)
-  }, [reserveWebinar])
+  }, [catalog.status, catalog.nextWebinar, reserveWebinar])
 
   // The static page scrolls to its #hash natively; React content mounts later, so do it here.
   useEffect(() => {
@@ -574,6 +569,11 @@ export default function HomePage() {
 
   const totals = cartTotals(cart)
   const indepth = TRAININGS.find((training) => training.id === 'indepth')!
+  const onlinePrice = catalogPrice(catalog, 'online-training', staticMoney(indepth.price, indepth.currency ?? 'INR'))
+  const offlinePrice = catalogPrice(catalog, 'offline-workshop', staticMoney(OFFLINE.price, 'INR'))
+  const webinarPrice = catalogPrice(catalog, 'monthly-webinar', staticMoney(webinar.price, 'INR'))
+  // Only the featured Online Training is sold on the page; other TRAININGS entries keep their static price.
+  const trainingPrice = (t: Training) => (t.id === indepth.id ? onlinePrice : staticMoney(t.price, t.currency ?? 'INR'))
   const closeCart = () => setCartOpen(false)
 
   const renderModal = () => {
@@ -589,10 +589,10 @@ export default function HomePage() {
           chips={fridays.map((date) => ({ label: fmtShort(date), small: '6:30 PM' }))}
           chipLabel="Choose your Friday evening session"
           emptyLabel="Select a date to continue"
-          addLabel={`Add to cart — ${money(t.price, t.currency)}`}
+          addLabel={`Add to cart — ${formatPrice(trainingPrice(t))}`}
           onClose={closeModal}
           onAdd={(index) => {
-            addToCart({ title: t.title, price: t.price, currency: t.currency || 'INR', meta: `${t.duration} · ${fmtShort(fridays[index])} · 6:30 PM`, art: { src: t.image, alt: t.imageAlt } })
+            addToCart({ title: t.title, ...cartPrice(trainingPrice(t)), meta: `${t.duration} · ${fmtShort(fridays[index])} · 6:30 PM`, art: { src: t.image, alt: t.imageAlt } })
             closeModal()
           }}
         >
@@ -613,11 +613,11 @@ export default function HomePage() {
           chips={batches.map((date) => ({ label: fmtRange(date, addDays(date, 4)), small: '5 days' }))}
           chipLabel="Choose your batch"
           emptyLabel="Select a batch to continue"
-          addLabel={`Add to cart — ${money(OFFLINE.price)}`}
+          addLabel={`Add to cart — ${formatPrice(offlinePrice)}`}
           onClose={closeModal}
           onAdd={(index) => {
             const start = batches[index]
-            addToCart({ title: 'Offline Workshop', price: OFFLINE.price, currency: 'INR', meta: `${fmtRange(start, addDays(start, 4))} · in person`, art: { src: OFFLINE.image, alt: OFFLINE.imageAlt } })
+            addToCart({ title: 'Offline Workshop', ...cartPrice(offlinePrice), meta: `${fmtRange(start, addDays(start, 4))} · in person`, art: { src: OFFLINE.image, alt: OFFLINE.imageAlt } })
             closeModal()
           }}
         />
@@ -710,7 +710,7 @@ export default function HomePage() {
               <p className="hero-close">Enroll now and start planting your own forest!</p>
               <div className="hero-cta">
                 <a href="#trainings" className="btn btn-primary">See trainings</a>
-                <a href="#webinar" className="btn btn-outline">This month&apos;s webinar — ₹149</a>
+                <a href="#webinar" className="btn btn-outline">This month&apos;s webinar — {formatPrice(webinarPrice)}</a>
               </div>
             </div>
             <div className="hero-art">
@@ -757,7 +757,7 @@ export default function HomePage() {
                 <p className="course-description">{indepth.tagline}</p>
                 <div className="course-facts"><span>{indepth.duration}</span><span>Live online · Friday evenings</span></div>
                 <p className="course-suitable"><strong>Suitable for</strong>{indepth.audience}</p>
-                <p className="course-price">{money(indepth.price, indepth.currency)}</p>
+                <p className="course-price">{formatPrice(onlinePrice)}</p>
                 <div className="course-actions">
                   <button className="btn btn-outline" data-id={indepth.id} data-kind="training" onClick={() => setModal({ kind: 'training', training: indepth })}>View details</button>
                   <button className="btn btn-primary" data-id={indepth.id} data-kind="training" onClick={() => setModal({ kind: 'training', training: indepth })}>Choose a Friday</button>
@@ -773,7 +773,7 @@ export default function HomePage() {
                 <ul className="includes-list" id="offlineIncludes" style={{ color: 'var(--on-forest)' }}>
                   {OFFLINE.includes.map((item) => <li key={item}><CheckIconSm /><span>{item}</span></li>)}
                 </ul>
-                <div className="offline-price-row"><span className="price" id="offlinePrice">{money(OFFLINE.price)}</span><span className="per">all-inclusive · 5 days</span></div>
+                <div className="offline-price-row"><span className="price" id="offlinePrice">{formatPrice(offlinePrice)}</span><span className="per">all-inclusive · 5 days</span></div>
                 <button className="btn btn-ochre" id="offlineEnrollBtn" onClick={() => setModal({ kind: 'offline' })}>Choose your start date</button>
               </div>
               <OfflineGallery />
@@ -786,23 +786,7 @@ export default function HomePage() {
         <section id="webinar">
           <div className="wrap">
             <div className="section-head"><div><span className="section-tag">Free to low-cost</span><h2>Monthly webinar</h2></div></div>
-            <div className="webinar-banner">
-              <a className="webinar-details-link" href="/monthly-webinar" aria-label="Learn more about the Monthly Webinar">
-                <div className="webinar-icon"><svg viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="18" height="16" rx="2" stroke="var(--on-forest)" strokeWidth="1.8" /><path d="M3 10h18M8 3v4M16 3v4" stroke="var(--on-forest)" strokeWidth="1.8" strokeLinecap="round" /></svg></div>
-                <div className="webinar-mid">
-                  <span className="live-tag"><span className="pulse-dot" />NEXT WEBINAR</span>
-                  <h3 id="webinarDateLine">{formatWebinarDateTime(webinar.date)}</h3>
-                  <p style={{ marginBottom: '.3em' }}>An open Q&amp;A introduction to the Miyawaki Method — great if you&apos;re not sure which training to start with.</p>
-                  <WebinarCountdown />
-                  <div className="seat-bar"><div className="seat-bar-fill" id="seatBarFill" style={{ width: `${Math.max(4, Math.round((seatsLeft / SEATS_TOTAL) * 100))}%` }} /></div>
-                  <span id="seatsLeftText" style={{ fontSize: '.8rem', fontWeight: 600, color: 'var(--ochre)' }}>{seatsLeft > 0 ? `Only ${seatsLeft} of ${SEATS_TOTAL} seats left` : 'Fully booked — join the next one'}</span>
-                </div>
-              </a>
-              <div className="webinar-right">
-                <span className="price" id="homeWebinarPrice">{money(webinar.price)}</span>
-                <button className="btn btn-primary" id="webinarRegisterBtn" disabled={seatsLeft <= 0} onClick={reserveWebinar}>{seatsLeft <= 0 ? 'Fully booked' : 'Reserve my seat'}</button>
-              </div>
-            </div>
+            <WebinarBanner catalog={catalog} price={webinarPrice} onReserve={reserveWebinar} />
           </div>
         </section>
 
