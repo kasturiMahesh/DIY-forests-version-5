@@ -85,7 +85,7 @@ You create and own the Neon project, and the connection strings stay on your mac
 
 | Table | Contents |
 |---|---|
-| `products` | UUIDv7 `id`; unique kebab-case `slug`; `name`; `type` (`ONLINE_TRAINING`, `OFFLINE_WORKSHOP`, `WEBINAR`); display texts; `price_amount numeric(12,2)` with `currency char(3)`; `is_active`; timestamps |
+| `products` | UUIDv7 `id`; unique kebab-case `slug`; `name`; `type` (`ONLINE_TRAINING`, `OFFLINE_WORKSHOP`, `WEBINAR`); display texts; `price_amount numeric(12,2)` with `currency char(3)`; `is_active`; `archived_at` (retired products kept only for their history; always inactive, hidden everywhere); timestamps |
 | `sessions` | UUIDv7 `id`; `product_id`, which references `products` and blocks deleting a product that has sessions; `starts_at` / `ends_at` (`timestamptz`, end optional); IANA `timezone` (default `Asia/Kolkata`); optional `capacity`; `status` (`DRAFT`, `PUBLISHED`, `CANCELLED`); `internal_note`; optional `venue` (workshops); optional `cohort_id` + `cohort_sequence` (1 or 2) for online-training sessions; timestamps. Unique on (`product_id`, `starts_at`) and on (`cohort_id`, `cohort_sequence`). |
 | `training_cohorts` | One online-training enrolment unit: two linked 4-hour sessions on consecutive Fridays. `product_id`, `status`, `timezone`, optional `capacity`, `internal_note`, timestamps. Added by migration `20261016120000_schedule_management` (additive only). |
 
@@ -99,8 +99,17 @@ These rules are enforced in the database by CHECK constraints written in the mig
 - a venue, if set, isn't blank
 - `cohort_id` and `cohort_sequence` are set together, and the sequence is 1 or 2
 - cohort capacity > 0 and cohort timezone isn't blank
+- an archived product is never active
 
 **Money:** amounts are exact decimals in major units (500.00 means USD 500), each with its own ISO 4217 currency. Nothing is converted between currencies, and no tax is applied or stored. PostgreSQL rounds input with more than two decimals, so validate amounts before writing them.
+
+## Retired products (migration `20261016140000_retire_obsolete_products`)
+
+The website sells three offerings: **Online Training** (USD 500), **Offline Workshop** (INR 100,000) and **Monthly Webinar** (INR 149). The earlier seed also created **Crash Course** and **Detailed Training** as inactive products. This migration retires them:
+- If nothing references one, it is **deleted**.
+- If sessions or training cohorts reference one, it can't be deleted (foreign keys) and its history must stay, so it is **archived**: `archived_at` is set and it's forced inactive.
+
+Archived products don't appear in any admin list, count, filter or form. The admin API answers 404 for them, so they can't be edited, activated or scheduled. They never reach the public catalog. Sessions that referenced them stay readable for the record. Past `audit_events` rows are kept; `target_id` has no foreign key.
 
 ## Time zones
 
@@ -116,7 +125,7 @@ These rules are enforced in the database by CHECK constraints written in the mig
 
 The seed is transcribed from the current website and upserts by stable keys, so reruns don't create duplicates.
 - **Active products:** Online Training (USD 500.00), Offline Workshop (INR 100,000.00) and Monthly Webinar (INR 149.00).
-- **Inactive products:** Crash Course (INR 3,500.00) and Detailed Training (INR 5,500.00). They're in the site's data but never offered on the page.
+- **No other products.** Crash Course and Detailed Training were never offered on the page and have been retired (see below); the seed doesn't create them.
 - **One session:** the Monthly Webinar on 13 Oct 2026, 18:30 IST, capacity 40. It's a **DRAFT** with a note, because:
   - its date has passed;
   - the site showed the time in each visitor's own zone, so "IST" is an assumption;

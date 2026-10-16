@@ -51,6 +51,9 @@ model Product {
   /// ISO 4217 code, upper case (CHECK constraint). Prices are never converted between currencies.
   currency      String      @db.Char(3)
   isActive      Boolean     @default(true) @map("is_active")
+  /// Set when a retired product had to be kept because sessions or cohorts reference it.
+  /// Archived products are always inactive (CHECK constraint) and are hidden from every product list and form.
+  archivedAt    DateTime?   @map("archived_at") @db.Timestamptz(3)
   createdAt     DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt     DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
 

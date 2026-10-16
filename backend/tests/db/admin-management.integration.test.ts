@@ -55,7 +55,7 @@ const auditCount = (action: string) => prisma.auditEvent.count({ where: { action
 
 beforeAll(async () => {
   database = await startTestDatabase()
-  await prismaCli(['migrate', 'deploy'], database.url) // all three migrations
+  await prismaCli(['migrate', 'deploy'], database.url) // all four migrations
   prisma = createPrismaClient(database.url, { maxConnections: 1 })
   await prisma.$executeRawUnsafe(`SET TIME ZONE 'Etc/GMT-5'`)
 }, 180_000)
@@ -116,10 +116,10 @@ describe('Stage 4B admin management', () => {
       const all = await asAdmin('get', '/products?pageSize=2')
       expect(all.status).toBe(200)
       expect(all.headers['cache-control']).toBe('no-store')
-      expect(all.body.meta).toEqual({ page: 1, pageSize: 2, total: 5 })
+      expect(all.body.meta).toEqual({ page: 1, pageSize: 2, total: 3 })
       expect(all.body.data).toHaveLength(2)
       const inactive = await asAdmin('get', '/products?active=false')
-      expect(inactive.body.data.map((p: { slug: string }) => p.slug).sort()).toEqual(['crash-course', 'detailed-training'])
+      expect(inactive.body.data).toEqual([]) // the seed has only the three offerings, all active
       expect((await asAdmin('get', '/products?q=WEBIN')).body.data.map((p: { slug: string }) => p.slug)).toEqual(['monthly-webinar'])
       expect((await asAdmin('get', '/products?active=yes')).status).toBe(400)
     })
@@ -385,7 +385,7 @@ describe('Stage 4B admin management', () => {
       const res = await asAdmin('get', '/dashboard')
       expect(res.status).toBe(200)
       expect(res.body.data).toMatchObject({
-        products: { active: 3, inactive: 3 },
+        products: { active: 3, inactive: 1 },
         upcoming: { WEBINAR: { published: 0 }, OFFLINE_WORKSHOP: { published: 1, draft: 0 }, ONLINE_TRAINING: { published: 0, draft: 1 } },
         capacityTracking: 'not_available_until_bookings_exist',
       })
@@ -393,6 +393,28 @@ describe('Stage 4B admin management', () => {
       // Only real schedule/product figures: no booking or seat numbers exist before Stage 4C.
       expect(Object.keys(res.body.data).sort()).toEqual(['cancelledUpcoming', 'capacityTracking', 'products', 'upcoming'])
       expect(Object.keys(res.body.data.upcoming.WEBINAR).sort()).toEqual(['draft', 'next', 'published'])
+    })
+  })
+
+  describe('archived (retired) products', () => {
+    it('are hidden from every product list, lookup, action and selection, while their history is kept', async () => {
+      // As the retire migration leaves a retired product that sessions still reference.
+      const archived = await prisma.product.create({ data: { slug: 'crash-course', name: 'Crash Course', type: 'WEBINAR', priceAmount: '3500.00', currency: 'INR', isActive: false, archivedAt: new Date() } })
+      const kept = await prisma.session.create({ data: { productId: archived.id, startsAt: new Date(Date.now() + 30 * DAY), status: 'DRAFT' } })
+      const before = (await asAdmin('get', '/dashboard')).body.data.products
+
+      const slugs = async (query: string) => (await asAdmin('get', `/products?pageSize=100${query}`)).body.data.map((p: { slug: string }) => p.slug)
+      for (const query of ['', '&active=false', '&type=WEBINAR', '&q=crash']) expect(await slugs(query)).not.toContain('crash-course')
+      expect((await asAdmin('get', `/products/${archived.id}`)).status).toBe(404)
+      expect((await asAdmin('patch', `/products/${archived.id}`, { name: 'Back again' })).status).toBe(404)
+      expect((await asAdmin('post', `/products/${archived.id}/activate`)).status).toBe(404)
+      expect((await asAdmin('post', '/sessions', { productId: archived.id, startsAt: new Date(Date.now() + 40 * DAY).toISOString() })).status).toBe(404)
+      expect((await asAdmin('get', '/dashboard')).body.data.products).toEqual(before)
+      await expect(prisma.product.update({ where: { id: archived.id }, data: { isActive: true } })).rejects.toThrow() // CHECK products_archived_inactive
+      expect((await publicGet('/products/crash-course')).status).toBe(404)
+
+      // The session that referenced it is kept for the record.
+      expect((await asAdmin('get', `/sessions/${kept.id}`)).body.data.product).toMatchObject({ slug: 'crash-course', isActive: false })
     })
   })
 

@@ -22,6 +22,8 @@ const PRODUCT_ADMIN_SELECT = {
   id: true, slug: true, name: true, type: true, summary: true, description: true, audience: true, durationLabel: true,
   priceAmount: true, currency: true, isActive: true, createdAt: true, updatedAt: true,
 } as const
+/** Products that have not been archived. */
+const LIVE_PRODUCT = { archivedAt: null } satisfies Prisma.ProductWhereInput
 const PRODUCT_REF_SELECT = { id: true, slug: true, name: true, type: true, isActive: true } as const
 const SESSION_ADMIN_SELECT = {
   id: true, startsAt: true, endsAt: true, timezone: true, capacity: true, status: true, internalNote: true, venue: true,
@@ -119,8 +121,9 @@ export function createAdminRepository(prisma: PrismaClient): AdminRepository {
   const audit = (tx: Tx, actor: Actor, action: string, targetType: string, targetId: string, details?: Prisma.InputJsonValue) =>
     tx.auditEvent.create({ data: { actorUserId: actor.userId, actorLabel: 'admin', action, targetType, targetId, requestId: actor.requestId ?? null, ...(details !== undefined ? { details } : {}) } })
 
+  // Archived (retired) products are kept only for the history of their sessions; to admins they no longer exist.
   const productOrThrow = async (tx: Tx | PrismaClient, id: string) => {
-    const product = await tx.product.findUnique({ where: { id }, select: { id: true, type: true, isActive: true } })
+    const product = await tx.product.findFirst({ where: { id, ...LIVE_PRODUCT }, select: { id: true, type: true, isActive: true } })
     if (!product) throw notFound('product')
     return product
   }
@@ -142,7 +145,7 @@ export function createAdminRepository(prisma: PrismaClient): AdminRepository {
   return {
     async dashboard(now) {
       await ready()
-      const [active, inactive] = await Promise.all([prisma.product.count({ where: { isActive: true } }), prisma.product.count({ where: { isActive: false } })])
+      const [active, inactive] = await Promise.all([prisma.product.count({ where: { isActive: true, ...LIVE_PRODUCT } }), prisma.product.count({ where: { isActive: false, ...LIVE_PRODUCT } })])
       const upcoming = {} as DashboardSummary['upcoming']
       for (const type of ['WEBINAR', 'OFFLINE_WORKSHOP'] as const) {
         const where = { cohortId: null, startsAt: { gte: now }, product: { type } }
@@ -170,6 +173,7 @@ export function createAdminRepository(prisma: PrismaClient): AdminRepository {
     async listProducts({ type, active, q }, { page, pageSize }) {
       await ready()
       const where: Prisma.ProductWhereInput = {
+        ...LIVE_PRODUCT,
         ...(type ? { type } : {}), ...(active !== undefined ? { isActive: active } : {}),
         ...(q ? { OR: [{ name: { contains: q, mode: 'insensitive' } }, { slug: { contains: q.toLowerCase() } }] } : {}),
       }
@@ -182,7 +186,7 @@ export function createAdminRepository(prisma: PrismaClient): AdminRepository {
 
     async getProduct(id) {
       await ready()
-      const row = await prisma.product.findUnique({ where: { id }, select: PRODUCT_ADMIN_SELECT })
+      const row = await prisma.product.findFirst({ where: { id, ...LIVE_PRODUCT }, select: PRODUCT_ADMIN_SELECT })
       if (!row) throw notFound('product')
       const grouped = await prisma.session.groupBy({ by: ['status'], where: { productId: id }, _count: { _all: true } })
       const counts = { DRAFT: 0, PUBLISHED: 0, CANCELLED: 0 } as Record<Status, number>
@@ -207,7 +211,7 @@ export function createAdminRepository(prisma: PrismaClient): AdminRepository {
 
     async updateProduct(id, patch, actor) {
       return write(async (tx) => {
-        const before = await tx.product.findUnique({ where: { id }, select: PRODUCT_ADMIN_SELECT })
+        const before = await tx.product.findFirst({ where: { id, ...LIVE_PRODUCT }, select: PRODUCT_ADMIN_SELECT })
         if (!before) throw notFound('product')
         const { price, ...fields } = patch
         const row = await tx.product.update({

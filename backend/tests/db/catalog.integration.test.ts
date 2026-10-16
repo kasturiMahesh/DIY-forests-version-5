@@ -84,9 +84,9 @@ describe('migrations', () => {
 describe('seed', () => {
   it('runs through the real `prisma db seed` entry point', async () => {
     const result = await prismaCli(['db', 'seed'], database.url)
-    expect(result.stdout).toMatch(/Seeded 5 products and 1 session\(s\) into 127\.0\.0\.1:\d+\/postgres\./)
+    expect(result.stdout).toMatch(/Seeded 3 products and 1 session\(s\) into 127\.0\.0\.1:\d+\/postgres\./)
     expect(result.stdout + result.stderr).not.toContain('postgres:postgres@') // credentials never printed
-    expect(await counts()).toEqual({ products: 5, sessions: 1 })
+    expect(await counts()).toEqual({ products: 3, sessions: 1 })
   }, 120_000)
 
   it('is idempotent: re-running creates no duplicates and keeps ids stable', async () => {
@@ -97,7 +97,7 @@ describe('seed', () => {
     await seedCatalog(prisma)
     await prismaCli(['db', 'seed'], database.url)
 
-    expect(await counts()).toEqual({ products: 5, sessions: 1 })
+    expect(await counts()).toEqual({ products: 3, sessions: 1 })
     expect(await prisma.product.findMany({ orderBy: { slug: 'asc' }, select: { id: true, slug: true } })).toEqual(before)
     expect(await prisma.session.findFirstOrThrow({ select: { id: true } })).toEqual(sessionBefore)
   }, 120_000)
@@ -215,6 +215,6 @@ describe('integrity constraints', () => {
   })
 
   it('leaves the seeded data unchanged after all rejected writes', async () => {
-    expect(await counts()).toEqual({ products: 5, sessions: 1 })
+    expect(await counts()).toEqual({ products: 3, sessions: 1 })
   })
 })

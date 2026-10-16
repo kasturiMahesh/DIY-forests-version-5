@@ -52,7 +52,10 @@ describe('catalog API', () => {
 
   beforeAll(async () => {
     await prisma.$executeRawUnsafe(`SET TIME ZONE 'UTC'`) // what a fresh Neon/RDS session gets from the migration
-    await seedCatalog(prisma) // 5 products (2 inactive) + the expired DRAFT webinar
+    await seedCatalog(prisma) // the 3 offerings + the expired DRAFT webinar
+    // Test-only products: one simply inactive, one archived (retired but kept for its sessions).
+    await prisma.product.create({ data: { slug: 'inactive-sample', name: 'Inactive Sample', type: 'ONLINE_TRAINING', priceAmount: '1.00', currency: 'INR', isActive: false } })
+    await prisma.product.create({ data: { slug: 'archived-sample', name: 'Archived Sample', type: 'WEBINAR', priceAmount: '1.00', currency: 'INR', isActive: false, archivedAt: new Date() } })
     const product = async (slug: string) => (await prisma.product.findUniqueOrThrow({ where: { slug } })).id
     const fixtures: [string, string, number, SessionStatus, Partial<{ capacity: number; endsAfterMs: number }>][] = [
       ['webinarSoon', 'monthly-webinar', 2 * DAY, SessionStatus.PUBLISHED, { capacity: 40, endsAfterMs: HOUR }],
@@ -61,7 +64,8 @@ describe('catalog API', () => {
       ['webinarPast', 'monthly-webinar', -3 * DAY, SessionStatus.PUBLISHED, {}],
       ['webinarCancelled', 'monthly-webinar', 5 * DAY, SessionStatus.CANCELLED, {}],
       ['webinarDraft', 'monthly-webinar', 6 * DAY, SessionStatus.DRAFT, {}],
-      ['inactiveProductSession', 'crash-course', 4 * DAY, SessionStatus.PUBLISHED, {}],
+      ['inactiveProductSession', 'inactive-sample', 4 * DAY, SessionStatus.PUBLISHED, {}],
+      ['archivedProductSession', 'archived-sample', 7 * DAY, SessionStatus.PUBLISHED, {}],
     ]
     for (const [key, slug, offset, status, extra] of fixtures) {
       const start = at(offset)
@@ -100,7 +104,7 @@ describe('catalog API', () => {
         slug: 'online-training', name: 'Online Training', type: 'ONLINE_TRAINING', durationLabel: '8 hours · 2 days',
         summary: 'Know everything about the Method — spread over 2 days.', id: expect.stringMatching(/^[0-9a-f-]{36}$/),
       })
-      expect(JSON.stringify(res.body)).not.toMatch(/isActive|createdAt|updatedAt|Crash Course|Detailed Training/)
+      expect(JSON.stringify(res.body)).not.toMatch(/isActive|createdAt|updatedAt|Crash Course|Detailed Training|Inactive Sample|Archived Sample/)
     })
 
     it('filters by type', async () => {
@@ -126,7 +130,7 @@ describe('catalog API', () => {
       expect(res.body.data).toMatchObject({ slug: 'offline-workshop', type: 'OFFLINE_WORKSHOP', price: { amount: '100000.00', currency: 'INR' } })
     })
 
-    it.each(['crash-course', 'detailed-training', 'no-such-product'])('hides %s (inactive or unknown) with the same 404', async (slug) => {
+    it.each(['crash-course', 'detailed-training', 'inactive-sample', 'archived-sample', 'no-such-product'])('hides %s (retired, inactive, archived or unknown) with the same 404', async (slug) => {
       const res = await request(app).get(`/api/v1/products/${slug}`)
       expect(res.status).toBe(404)
       expect(res.body.error).toMatchObject({ code: 'PRODUCT_NOT_FOUND', message: 'Product not found' })
@@ -151,7 +155,7 @@ describe('catalog API', () => {
 
     it('excludes the expired seeded webinar, drafts, cancelled, past and inactive-product sessions', async () => {
       const body = JSON.stringify((await request(app).get('/api/v1/sessions')).body)
-      for (const hidden of ['webinarPast', 'webinarCancelled', 'webinarDraft', 'inactiveProductSession']) expect(body).not.toContain(ids[hidden])
+      for (const hidden of ['webinarPast', 'webinarCancelled', 'webinarDraft', 'inactiveProductSession', 'archivedProductSession']) expect(body).not.toContain(ids[hidden])
       expect(body).not.toContain('2026-10-13T13:00:00.000Z') // the Stage 2 DRAFT webinar
     })
 
@@ -179,8 +183,10 @@ describe('catalog API', () => {
       expect(byType.body.data.map((s: { id: string }) => s.id)).toEqual([ids.webinarSoon])
       const byProduct = await request(app).get('/api/v1/sessions?product=offline-workshop')
       expect(byProduct.body.data.map((s: { id: string }) => s.id)).toEqual([ids.workshopLater])
-      const inactive = await request(app).get('/api/v1/sessions?product=crash-course')
-      expect(inactive.body).toMatchObject({ data: [], meta: { count: 0 } })
+      for (const slug of ['inactive-sample', 'archived-sample']) {
+        const hidden = await request(app).get(`/api/v1/sessions?product=${slug}`)
+        expect(hidden.body).toMatchObject({ data: [], meta: { count: 0 } })
+      }
     })
 
     it('treats `from` as an instant: the same moment written in UTC or IST gives the same result', async () => {
@@ -239,7 +245,7 @@ describe('catalog API', () => {
       expect(Date.parse(res.body.data.startsAt)).toBeLessThan(Date.now())
     })
 
-    it.each(['webinarDraft', 'webinarCancelled', 'inactiveProductSession'])('hides the %s session with 404', async (key) => {
+    it.each(['webinarDraft', 'webinarCancelled', 'inactiveProductSession', 'archivedProductSession'])('hides the %s session with 404', async (key) => {
       const res = await request(app).get(`/api/v1/sessions/${ids[key]}`)
       expect(res.status).toBe(404)
       expect(res.body.error).toMatchObject({ code: 'SESSION_NOT_FOUND', message: 'Session not found' })
@@ -260,6 +266,6 @@ describe('catalog API', () => {
 
   it('made no writes: catalog reads leave the data unchanged', async () => {
     expect(await prisma.product.count()).toBe(5)
-    expect(await prisma.session.count()).toBe(8)
+    expect(await prisma.session.count()).toBe(9)
   })
 })

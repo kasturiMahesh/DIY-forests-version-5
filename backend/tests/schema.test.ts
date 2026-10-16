@@ -19,7 +19,7 @@ describe('Prisma schema (offline)', () => {
     expect(Object.values(ProductType)).toEqual(['ONLINE_TRAINING', 'OFFLINE_WORKSHOP', 'WEBINAR'])
     expect(Object.values(SessionStatus)).toEqual(['DRAFT', 'PUBLISHED', 'CANCELLED'])
     expect(Object.values(Prisma.ProductScalarFieldEnum)).toEqual([
-      'id', 'slug', 'name', 'type', 'summary', 'description', 'audience', 'durationLabel', 'priceAmount', 'currency', 'isActive', 'createdAt', 'updatedAt',
+      'id', 'slug', 'name', 'type', 'summary', 'description', 'audience', 'durationLabel', 'priceAmount', 'currency', 'isActive', 'archivedAt', 'createdAt', 'updatedAt',
     ])
     expect(Object.values(Prisma.SessionScalarFieldEnum)).toEqual([
       'id', 'productId', 'startsAt', 'endsAt', 'timezone', 'capacity', 'status', 'internalNote', 'venue', 'cohortId', 'cohortSequence', 'createdAt', 'updatedAt',

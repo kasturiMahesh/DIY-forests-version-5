@@ -19,21 +19,11 @@ export type Training = {
   includes: string[]
 }
 
+/** Thumbnail shown for the webinar in the cart (unchanged; it used to be read from the first TRAININGS entry). */
+export const WEBINAR_CART_ART: Art = { src: 'https://afforestt.com/wp-content/uploads/2025/12/IMG_2501-1024x576.webp', alt: 'Native forest restoration work in Tunisia' }
+
+/** The single in-depth Online Training. Crash Course and Detailed Training were retired and are not offered. */
 export const TRAININGS: Training[] = [
-  {
-    id: 'crash', title: 'Crash Course', tagline: 'Basics and hands-on implementation of the Miyawaki Method.', duration: '2 hours', price: 3500,
-    image: 'https://afforestt.com/wp-content/uploads/2025/12/IMG_2501-1024x576.webp', imageAlt: 'Native forest restoration work in Tunisia',
-    audience: 'Beginners who want to understand the basics.',
-    learn: ['Understanding the Miyawaki Method', 'Choosing native species', 'Basic soil preparation', 'Basic planting process'],
-    includes: ['Live 2-hour session, straight to the point', 'Downloadable planting checklist', 'Certificate of participation'],
-  },
-  {
-    id: 'detailed', title: 'Detailed Training', tagline: 'A deeper, hands-on training for practical learners.', duration: '4 hours', price: 5500,
-    image: 'https://afforestt.com/wp-content/uploads/2025/07/dji_fly_20250112_105042_820_1737088407382_photo-1024x579.jpg', imageAlt: 'Afforestt soil restoration project in Rajasthan',
-    audience: 'People ready to start planning a real site.',
-    learn: ['Reading soil and site conditions', 'Building a native species list', 'Planning the planting layout', 'Aftercare for the first few months'],
-    includes: ['Live 4-hour session covering soil, species and layout', 'Worked example using a real site plan', 'Certificate of participation'],
-  },
   {
     id: 'indepth', title: 'Online Training', tagline: 'Know everything about the Method — spread over 2 days.', duration: '8 hours · 2 days', price: 500, currency: 'USD',
     image: '/WhatsApp%20Image%202026-10-07%20at%204.41.13%20PM.jpeg', imageAlt: 'Native forest growth from initial planting to a mature site',

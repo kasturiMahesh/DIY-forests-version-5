@@ -23,6 +23,10 @@ export type SeedProduct = {
   isActive: boolean
 }
 
+/**
+ * The three offerings sold on the website. "Crash Course" and "Detailed Training" were retired
+ * (migration 20261016140000_retire_obsolete_products) and must not be re-created here.
+ */
 export const SEED_PRODUCTS: readonly SeedProduct[] = [
   {
     slug: 'online-training',
@@ -59,32 +63,6 @@ export const SEED_PRODUCTS: readonly SeedProduct[] = [
     priceAmount: '149.00',
     currency: 'INR',
     isActive: true,
-  },
-  // Present in the site's data but not offered anywhere on the page. Seeded inactive so the
-  // information is preserved without being presented as for sale.
-  {
-    slug: 'crash-course',
-    name: 'Crash Course',
-    type: ProductType.ONLINE_TRAINING,
-    summary: 'Basics and hands-on implementation of the Miyawaki Method.',
-    description: null,
-    audience: 'Beginners who want to understand the basics.',
-    durationLabel: '2 hours',
-    priceAmount: '3500.00',
-    currency: 'INR',
-    isActive: false,
-  },
-  {
-    slug: 'detailed-training',
-    name: 'Detailed Training',
-    type: ProductType.ONLINE_TRAINING,
-    summary: 'A deeper, hands-on training for practical learners.',
-    description: null,
-    audience: 'People ready to start planning a real site.',
-    durationLabel: '4 hours',
-    priceAmount: '5500.00',
-    currency: 'INR',
-    isActive: false,
   },
 ]
 

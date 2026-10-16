@@ -3,7 +3,7 @@ import { AccountLink } from '../auth/AccountLink'
 import accountLinkCss from '../styles/account-link.css?inline'
 import homeCss from '../styles/home.css?inline'
 import {
-  OFFLINE, PROGRAMS, REVIEWS, TRAINEES, TRAININGS, money,
+  OFFLINE, PROGRAMS, REVIEWS, TRAINEES, TRAININGS, WEBINAR_CART_ART, money,
   type Art, type Currency, type Trainee, type Training,
 } from '../data'
 import { calendarDaysInclusive, formatDateRange, formatDayMonth, formatPrice, formatSessionDateTime, formatTime, staticMoney } from '../api/format'
@@ -503,7 +503,7 @@ export default function HomePage() {
   // Adds the published session to the demo cart (browser-only; no booking or seat is reserved yet).
   const reserveWebinar = useCallback((session: PublicSession) => {
     const price = isCartCurrency(session.product.price.currency) ? session.product.price : staticMoney(webinar.price, 'INR')
-    addToCart({ title: session.product.name, ...cartPrice(price), meta: formatSessionDateTime(session.startsAt), art: { src: TRAININGS[0].image, alt: TRAININGS[0].imageAlt } })
+    addToCart({ title: session.product.name, ...cartPrice(price), meta: formatSessionDateTime(session.startsAt), art: WEBINAR_CART_ART })
   }, [addToCart])
 
   // ?reserve=webinar (from the webinar page) adds the webinar on arrival, like the original,
@@ -590,7 +590,7 @@ export default function HomePage() {
   const onlinePrice = catalogPrice(catalog, 'online-training', staticMoney(indepth.price, indepth.currency ?? 'INR'))
   const offlinePrice = catalogPrice(catalog, 'offline-workshop', staticMoney(OFFLINE.price, 'INR'))
   const webinarPrice = catalogPrice(catalog, 'monthly-webinar', staticMoney(webinar.price, 'INR'))
-  // Only the featured Online Training is sold on the page; other TRAININGS entries keep their static price.
+  // Online Training is the only training offered; its price comes from the API when available.
   const trainingPrice = (t: Training) => (t.id === indepth.id ? onlinePrice : staticMoney(t.price, t.currency ?? 'INR'))
   const closeCart = () => setCartOpen(false)
 

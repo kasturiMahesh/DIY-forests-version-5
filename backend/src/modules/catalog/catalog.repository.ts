@@ -33,10 +33,10 @@ export function createCatalogRepository(prisma: PrismaClient): CatalogRepository
 
   // Standalone sessions only: the two sessions of an online-training cohort are offered (and later
   // booked) as one unit through the cohort endpoints, never as two separate dates.
-  const publicSession = { status: SessionStatus.PUBLISHED, cohortId: null, product: { isActive: true } } as const
+  const publicSession = { status: SessionStatus.PUBLISHED, cohortId: null, product: { isActive: true, archivedAt: null } } as const
   const publicCohort = {
     status: SessionStatus.PUBLISHED,
-    product: { isActive: true },
+    product: { isActive: true, archivedAt: null },
     // Fail closed: a cohort is visible only while neither of its sessions is unpublished.
     sessions: { none: { status: { not: SessionStatus.PUBLISHED } } },
   } as const
@@ -45,7 +45,7 @@ export function createCatalogRepository(prisma: PrismaClient): CatalogRepository
     async listProducts({ type }) {
       await ready()
       const rows = await prisma.product.findMany({
-        where: { isActive: true, ...(type ? { type } : {}) },
+        where: { isActive: true, archivedAt: null, ...(type ? { type } : {}) },
         select: PRODUCT_SELECT,
         orderBy: [{ type: 'asc' }, { name: 'asc' }, { id: 'asc' }],
       })
@@ -54,7 +54,7 @@ export function createCatalogRepository(prisma: PrismaClient): CatalogRepository
 
     async findProduct(slug) {
       await ready()
-      const row = await prisma.product.findFirst({ where: { slug, isActive: true }, select: PRODUCT_SELECT })
+      const row = await prisma.product.findFirst({ where: { slug, isActive: true, archivedAt: null }, select: PRODUCT_SELECT })
       return row ? toPublicProduct(row) : null
     },
 
@@ -64,7 +64,7 @@ export function createCatalogRepository(prisma: PrismaClient): CatalogRepository
         where: {
           ...publicSession,
           startsAt: { gte: from },
-          product: { isActive: true, ...(productSlug ? { slug: productSlug } : {}), ...(type ? { type } : {}) },
+          product: { isActive: true, archivedAt: null, ...(productSlug ? { slug: productSlug } : {}), ...(type ? { type } : {}) },
         },
         select: SESSION_SELECT,
         orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
@@ -82,7 +82,7 @@ export function createCatalogRepository(prisma: PrismaClient): CatalogRepository
     async listUpcomingCohorts({ from, limit, productSlug }) {
       await ready()
       const firsts = await prisma.session.findMany({
-        where: { cohortSequence: 1, startsAt: { gte: from }, cohort: { ...publicCohort, ...(productSlug ? { product: { isActive: true, slug: productSlug } } : {}) } },
+        where: { cohortSequence: 1, startsAt: { gte: from }, cohort: { ...publicCohort, ...(productSlug ? { product: { isActive: true, archivedAt: null, slug: productSlug } } : {}) } },
         select: { cohortId: true },
         orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
         take: limit,
