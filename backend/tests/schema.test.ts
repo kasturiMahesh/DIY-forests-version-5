@@ -22,7 +22,7 @@ describe('Prisma schema (offline)', () => {
       'id', 'slug', 'name', 'type', 'summary', 'description', 'audience', 'durationLabel', 'priceAmount', 'currency', 'isActive', 'archivedAt', 'createdAt', 'updatedAt',
     ])
     expect(Object.values(Prisma.SessionScalarFieldEnum)).toEqual([
-      'id', 'productId', 'startsAt', 'endsAt', 'timezone', 'capacity', 'status', 'internalNote', 'venue', 'cohortId', 'cohortSequence', 'createdAt', 'updatedAt',
+      'id', 'productId', 'startsAt', 'endsAt', 'timezone', 'capacity', 'status', 'internalNote', 'venue', 'cohortId', 'cohortSequence', 'seatsHeld', 'createdAt', 'updatedAt',
     ])
   })
 

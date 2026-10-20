@@ -38,14 +38,22 @@ To see live catalog data, also run the backend: `cd backend && npm run dev`. The
 | Loading | Webinar heading "Loading…"; Reserve disabled; static prices |
 | Empty (no published webinar) | "Next date to be announced"; button "Dates coming soon" (disabled); no countdown. The webinar page shows no Reserve links and hides the sticky booking bar. |
 | API error or unreachable | "Schedule unavailable" with a **Try again** button; prices fall back to the existing static values, so the layout never breaks |
-| Published session | Real date, live countdown, "Limited to N seats" if capacity is set, and Reserve adds it to the demo cart |
+| Published session | Real date, live countdown, "Limited to N seats" if capacity is set, and Reserve adds it to the cart |
+| Fully booked | "Fully booked" (from the server's `seatsAvailable`); Reserve is disabled |
 
 - **Online training dates (Stage 4B):** the "Choose a Friday" picker lists published cohorts from `GET /api/v1/cohorts?product=online-training`. Each chip is one enrolment: two 4-hour sessions on consecutive Fridays, for example "Fri, 13 Nov & Fri, 20 Nov · 6:30 PM", shown in the visitor's time zone.
 - **Workshop batches (Stage 4B):** the "Choose your start date" picker lists published `OFFLINE_WORKSHOP` sessions, with their real date range, number of days and venue.
 - While these load, if none are published, or if the API fails, the pickers say so ("Loading dates…", "New … will be announced soon.", "We couldn’t load the dates." with **Try again**), and the add-to-cart button stays disabled. No dates are generated in the browser any more.
+- Dates with no seats left (`seatsAvailable: 0`) are shown as "Fully booked" and can't be selected. The booking request re-checks availability on the server.
 
-**What it doesn't drive:**
-- Checkout is still the browser-only demo; nothing is booked or paid, and seat counts aren't tracked until bookings exist.
+**Checkout (Stage 4C):** checkout sends real booking requests (`POST /api/v1/me/bookings`); `src/bookings/checkout.ts` holds the logic.
+- **Sign-in:** checkout needs a signed-in customer account. Signed out, it offers sign-in or account creation and keeps the cart. Staff sessions are told to use a customer account.
+- **The form:** the account email (read-only), a contact name, and a phone country plus number. The server validates and normalizes the phone.
+- **One request per cart item:** each item has its own idempotency key, so retrying after a network failure can't book twice.
+- **Results:** only bookings the server returned are shown as received, each with its reference and **"pending payment"**. Items that failed stay in the cart with the server's reason.
+- **No payment:** online payment isn't built. Nothing is charged, no card details are collected, and bookings stay pending payment until cancelled.
+- **No tax in the browser:** prices are shown as listed. The demo GST line, payment-method chips and confetti have been removed.
+- **Saved carts:** the cart is stored under `afforestt_training_cart_v2`. Items from the old demo cart had no booking target, so they aren't loaded.
 
 **Configuration:**
 
@@ -64,7 +72,7 @@ When `VITE_API_BASE_URL` points at another origin, add that site's origin to the
   | Page | Purpose |
   |---|---|
   | `/sign-in` | Sign-in and create-account buttons, plus friendly messages for sign-in errors (`?error=…`) |
-  | `/account` | Your own details, display name, session expiry and sign out. Bookings arrive in a later stage. |
+  | `/account` | Your own details, display name, session expiry and sign out, plus **Your bookings** (Stage 4C): status, reference, dates and price from `GET /api/v1/me/bookings`, with **Cancel booking** until the dates start |
   | `/admin/*` | Staff sign-in, then the admin dashboard (Stage 4B). The page asks the server (`GET /api/v1/admin/me`) before showing anything, so a customer session only ever sees "no access". |
 
   These pages reuse the webinar page's header, footer and buttons (`webinar.css`), plus a few form and card rules in `src/styles/auth.css`.
@@ -77,7 +85,7 @@ When `VITE_API_BASE_URL` points at another origin, add that site's origin to the
 
 ## Admin dashboard (Stage 4B)
 
-The admin dashboard lives in `src/admin/`, with tabs at `/admin`, `/admin/products`, `/admin/webinars`, `/admin/workshops` and `/admin/training`.
+The admin dashboard lives in `src/admin/`, with tabs at `/admin`, `/admin/products`, `/admin/webinars`, `/admin/workshops`, `/admin/training` and (Stage 4C) `/admin/bookings`.
 
 | Tab | What staff can do |
 |---|---|
@@ -86,12 +94,14 @@ The admin dashboard lives in `src/admin/`, with tabs at `/admin`, `/admin/produc
 | Webinars | Create a draft, edit or reschedule, publish, cancel (with an optional reason). Capacity is optional. |
 | Workshops | The same, plus the required venue and end date |
 | Online training | Pick the first Friday and a start time. The form previews both 4-hour sessions one week apart. Both are published or cancelled together. |
+| Bookings (Stage 4C) | Filter by status, or search by reference or customer email. **Details** shows the contact phone. **Cancel** needs a reason and releases the seat. There's no "mark as paid": payment isn't built. |
 
 How it behaves:
 - Times are entered and shown in **organizer time (IST)**. `src/admin/admin-time.ts` converts them to exact instants with a `+05:30` offset, so the admin's computer zone never shifts a date.
 - Forms check the same rules as the server for quick feedback. The server stays the authority, and its error messages are shown as-is.
 - Writes send the CSRF token from `/auth/me`. A 401 switches the page to "session expired".
-- Bookings, seats taken and customer records aren't shown; they arrive in Stage 4C.
+- Overview shows booking counts (pending payment / cancelled). Webinar, workshop and training tables show **booked / capacity**.
+- A session or cohort with active bookings can't be rescheduled, cancelled, or given a capacity below the seats held. The server refuses, and its message is shown.
 
 ## Tests and checks
 
@@ -125,4 +135,4 @@ npm run parity:functional       # same user flows on both sites; prints MATCH/DI
 
 If Playwright reports a missing browser, run `npx playwright install chromium`.
 
-Since Stage 3, the webinar banner, the webinar page, and the old fake "seats left" bar intentionally differ from the original static site, because they now reflect real catalog data. Expect the parity scripts to report those differences.
+Since Stage 3, the webinar banner, the webinar page, and the old fake "seats left" bar intentionally differ from the original static site, because they now reflect real catalog data. Since Stage 4C, the cart and checkout differ too: no GST line (`#cartGst`), no payment-method chips, and a real sign-in and booking flow. Expect the parity scripts to report those differences.

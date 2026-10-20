@@ -9,10 +9,12 @@ const statusStyle = { fontSize: '.8rem', fontWeight: 600, color: 'var(--ochre)' 
  * Home page "Monthly webinar" banner. Same markup and classes as before; the date, countdown
  * and button now come from the catalog API. Nothing is shown as bookable unless a PUBLISHED
  * upcoming session exists. The old "Only 12 of 40 seats left" bar was a browser-only
- * placeholder, so it is gone; capacity is shown only when the session defines one.
+ * placeholder, so it is gone; capacity is shown only when the session defines one. "Fully booked" comes
+ * only from the server's seatsAvailable (and the booking request re-checks it).
  */
 export function WebinarBanner({ catalog, price, onReserve }: { catalog: CatalogState; price: Money; onReserve: (session: PublicSession) => void }) {
   const session = catalog.status === 'ready' ? catalog.nextWebinar : null
+  const soldOut = session?.seatsAvailable === 0
 
   let heading: string
   let status: string | null = null
@@ -25,7 +27,7 @@ export function WebinarBanner({ catalog, price, onReserve }: { catalog: CatalogS
     status = 'No upcoming webinar is scheduled yet.'
   } else {
     heading = formatSessionDateTime(session.startsAt)
-    status = session.capacity ? `Limited to ${session.capacity} seats` : null
+    status = soldOut ? 'Fully booked' : session.capacity ? `Limited to ${session.capacity} seats` : null
   }
 
   return (
@@ -45,8 +47,8 @@ export function WebinarBanner({ catalog, price, onReserve }: { catalog: CatalogS
         {catalog.status === 'error' ? (
           <button className="btn btn-primary" id="webinarRegisterBtn" onClick={catalog.retry}>Try again</button>
         ) : (
-          <button className="btn btn-primary" id="webinarRegisterBtn" disabled={!session} onClick={() => { if (session) onReserve(session) }}>
-            {catalog.status === 'ready' && !session ? 'Dates coming soon' : 'Reserve my seat'}
+          <button className="btn btn-primary" id="webinarRegisterBtn" disabled={!session || soldOut} onClick={() => { if (session && !soldOut) onReserve(session) }}>
+            {catalog.status === 'ready' && !session ? 'Dates coming soon' : soldOut ? 'Fully booked' : 'Reserve my seat'}
           </button>
         )}
       </div>

@@ -55,7 +55,7 @@ const auditCount = (action: string) => prisma.auditEvent.count({ where: { action
 
 beforeAll(async () => {
   database = await startTestDatabase()
-  await prismaCli(['migrate', 'deploy'], database.url) // all four migrations
+  await prismaCli(['migrate', 'deploy'], database.url) // all five migrations
   prisma = createPrismaClient(database.url, { maxConnections: 1 })
   await prisma.$executeRawUnsafe(`SET TIME ZONE 'Etc/GMT-5'`)
 }, 180_000)
@@ -381,17 +381,17 @@ describe('Stage 4B admin management', () => {
   })
 
   describe('dashboard', () => {
-    it('summarises real records only, with no booking figures before Stage 4C', async () => {
+    it('summarises real records only, including real (Stage 4C) booking counts', async () => {
       const res = await asAdmin('get', '/dashboard')
       expect(res.status).toBe(200)
       expect(res.body.data).toMatchObject({
         products: { active: 3, inactive: 1 },
         upcoming: { WEBINAR: { published: 0 }, OFFLINE_WORKSHOP: { published: 1, draft: 0 }, ONLINE_TRAINING: { published: 0, draft: 1 } },
-        capacityTracking: 'not_available_until_bookings_exist',
+        bookings: { pendingPayment: 0, cancelled: 0 }, // this suite creates no bookings
       })
       expect(res.body.data.upcoming.OFFLINE_WORKSHOP.next[0]).toMatchObject({ kind: 'session', productName: 'Offline Workshop' })
-      // Only real schedule/product figures: no booking or seat numbers exist before Stage 4C.
-      expect(Object.keys(res.body.data).sort()).toEqual(['cancelledUpcoming', 'capacityTracking', 'products', 'upcoming'])
+      // Only real figures from PostgreSQL: products, schedules and booking counts.
+      expect(Object.keys(res.body.data).sort()).toEqual(['bookings', 'cancelledUpcoming', 'products', 'upcoming'])
       expect(Object.keys(res.body.data.upcoming.WEBINAR).sort()).toEqual(['draft', 'next', 'published'])
     })
   })

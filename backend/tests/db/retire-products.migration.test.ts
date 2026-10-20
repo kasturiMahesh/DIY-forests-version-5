@@ -28,8 +28,11 @@ describe(`migration ${RETIRE}`, () => {
   beforeAll(async () => {
     db = await PGlite.create()
     await db.exec(`SET TIME ZONE 'UTC'`)
-    expect(migrations.at(-1)).toBe(RETIRE)
-    for (const name of migrations.slice(0, -1)) await db.exec(sql(name))
+    // Apply exactly the migrations that precede the retire migration, in order (later ones, such as
+    // the Stage 4C booking foundation, are not part of the state this migration was written against).
+    const retireIndex = migrations.indexOf(RETIRE)
+    expect(retireIndex).toBeGreaterThan(0)
+    for (const name of migrations.slice(0, retireIndex)) await db.exec(sql(name))
 
     // State before the migration: both obsolete products exist; Detailed Training has a session and a cohort.
     await product('online-training', 'Online Training')
@@ -43,7 +46,7 @@ describe(`migration ${RETIRE}`, () => {
     )).rows[0]!.id
 
     await db.exec(sql(RETIRE))
-  })
+  }, 60_000) // PGlite start-up plus four migrations can exceed the 10 s default while other db suites run in parallel
   afterAll(async () => db?.close())
 
   it('deletes an unreferenced obsolete product and archives (deactivates) a referenced one; others are untouched', async () => {

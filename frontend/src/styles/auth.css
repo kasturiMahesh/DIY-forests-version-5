@@ -63,3 +63,12 @@
 .admin-tile.is-live{border-style:solid;}
 .admin-next{margin:6px 0 0; padding-left:1.1em; font-size:.82rem; color:var(--ink-soft);}
 @media(max-width:760px){.admin-form-grid{grid-template-columns:1fr;}}
+/* Stage 4C: booking history (account) and bookings (admin). Same tokens as the rest of the page. */
+.booking-list{list-style:none; margin:12px 0 0; padding:0;}
+.booking-item{display:flex; flex-wrap:wrap; justify-content:space-between; gap:12px; padding:14px 0; border-bottom:1px solid var(--line);}
+.booking-item p{margin:4px 0 0; font-size:.9rem;}
+.booking-item.is-cancelled strong{color:var(--ink-soft);}
+.booking-ref{font-size:.78rem; font-weight:700; letter-spacing:.04em; color:var(--ink-soft);}
+.booking-status{font-weight:700; color:var(--forest-ink);}
+.booking-status.is-cancelled{color:var(--ink-soft);}
+.booking-confirm{display:inline-flex; flex-wrap:wrap; gap:6px; align-items:center;}

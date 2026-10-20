@@ -17,6 +17,10 @@ export type AuthModuleOptions = {
   now?: () => Date
   /** Stage 4B admin management routes, mounted under /admin behind the admin guards. */
   adminManagement?: Router
+  /** Stage 4C admin booking routes, mounted under /admin behind the admin guards. */
+  adminBookings?: Router
+  /** Stage 4C customer booking routes, mounted under /me behind the account guards. */
+  customerBookings?: Router
 }
 
 /** Providers for the configured mode: none (disabled), the guarded dev provider, or OIDC (Cognito). */
@@ -45,7 +49,7 @@ export function createAuthModule(options: AuthModuleOptions): Router {
 
   const router = Router()
   router.use(authRouter({ ...deps, logger: options.logger, devProviders }))
-  router.use(accountRouter(deps))
-  router.use(adminRouter(deps, options.adminManagement))
+  router.use(accountRouter(deps, options.customerBookings))
+  router.use(adminRouter(deps, [options.adminManagement, options.adminBookings]))
   return router
 }

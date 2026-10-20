@@ -1,4 +1,4 @@
-import type { AdminMeResponse, AuthUser, MeResponse, Money, ProductType, PublicCohort, PublicProduct, PublicProductRef, PublicSession, SessionListMeta, SessionQuery } from './types'
+import type { AdminMeResponse, AuthUser, BookingRequest, BookingStatus, CustomerBooking, MeResponse, Money, PageMeta, ProductType, PublicCohort, PublicProduct, PublicProductRef, PublicSession, SessionListMeta, SessionQuery } from './types'
 
 export type ApiErrorKind = 'network' | 'timeout' | 'http' | 'invalid-response'
 
@@ -23,6 +23,8 @@ const isString = (value: unknown): value is string => typeof value === 'string'
 const isNullableString = (value: unknown): value is string | null => value === null || typeof value === 'string'
 const isInstant = (value: unknown): value is string => isString(value) && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(value) && !Number.isNaN(Date.parse(value))
 const PRODUCT_TYPES: readonly ProductType[] = ['ONLINE_TRAINING', 'OFFLINE_WORKSHOP', 'WEBINAR']
+/** Absent (older API), null (no limit) or a non-negative whole number. */
+const isSeats = (value: unknown) => value === undefined || value === null || (Number.isInteger(value) && (value as number) >= 0)
 
 const isMoney: Guard<Money> = (value): value is Money =>
   isObject(value) && isString(value.amount) && /^\d+\.\d{2}$/.test(value.amount) && isString(value.currency) && /^[A-Z]{3}$/.test(value.currency)
@@ -36,11 +38,11 @@ export const isPublicProduct: Guard<PublicProduct> = (value): value is PublicPro
 
 export const isPublicSession: Guard<PublicSession> = (value): value is PublicSession =>
   isObject(value) && isString(value.id) && isInstant(value.startsAt) && (value.endsAt === null || isInstant(value.endsAt)) && isString(value.timezone) &&
-  (value.capacity === null || (Number.isInteger(value.capacity) && (value.capacity as number) > 0)) && isProductRef(value.product) &&
+  (value.capacity === null || (Number.isInteger(value.capacity) && (value.capacity as number) > 0)) && isSeats(value.seatsAvailable) && isProductRef(value.product) &&
   (value.venue === undefined || isNullableString(value.venue))
 
 export const isPublicCohort: Guard<PublicCohort> = (value): value is PublicCohort =>
-  isObject(value) && isString(value.id) && isString(value.timezone) && (value.capacity === null || Number.isInteger(value.capacity)) && isProductRef(value.product) &&
+  isObject(value) && isString(value.id) && isString(value.timezone) && (value.capacity === null || Number.isInteger(value.capacity)) && isSeats(value.seatsAvailable) && isProductRef(value.product) &&
   Array.isArray(value.sessions) && value.sessions.length === 2 &&
   value.sessions.every((session, index) => isObject(session) && session.sequence === index + 1 && isInstant(session.startsAt) && isInstant(session.endsAt))
 
@@ -57,6 +59,26 @@ const isAdminMeResponse: Guard<AdminMeResponse> = (value): value is AdminMeRespo
 const isLogoutResponse: Guard<{ logoutUrl: string | null }> = (value): value is { logoutUrl: string | null } =>
   isObject(value) && (value.logoutUrl === null || (isString(value.logoutUrl) && value.logoutUrl.startsWith('https://'))) // only a provider page over https
 
+const BOOKING_STATUSES: readonly BookingStatus[] = ['PENDING_PAYMENT', 'CANCELLED']
+const isTarget = (value: unknown) =>
+  isObject(value) && isString(value.id) && isString(value.timezone) && (
+    (value.kind === 'session' && isInstant(value.startsAt) && (value.endsAt === null || isInstant(value.endsAt))) ||
+    (value.kind === 'cohort' && Array.isArray(value.sessions) && value.sessions.every((session) => isObject(session) && isInstant(session.startsAt))))
+/** Shape check for a booking: it is only ever shown when the server really returned one. */
+export const isCustomerBooking: Guard<CustomerBooking> = (value): value is CustomerBooking =>
+  isObject(value) && isString(value.id) && isString(value.reference) && /^DF-[0-9A-Z]{8}$/.test(value.reference) &&
+  BOOKING_STATUSES.includes(value.status as BookingStatus) && isMoney(value.price) && isObject(value.product) && isString(value.product.name) &&
+  isTarget(value.target) && typeof value.canCancel === 'boolean' && isInstant(value.createdAt) &&
+  (value.cancellation === null || (isObject(value.cancellation) && isInstant(value.cancellation.at))) &&
+  isObject(value.contact) && isString(value.contact.name)
+const isPageMeta = (value: unknown): value is PageMeta => isObject(value) && Number.isInteger(value.page) && Number.isInteger(value.pageSize) && Number.isInteger(value.total)
+
+/**
+ * A fresh idempotency key for one booking attempt (reused for that attempt's retries): 32 random hex
+ * characters. getRandomValues (unlike randomUUID) also works outside secure contexts, e.g. a LAN preview.
+ */
+export const newIdempotencyKey = () => Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, '0')).join('')
+
 // ---- transport ----
 
 export type ApiClientOptions = {
@@ -69,9 +91,13 @@ export type ApiClientOptions = {
 export function createApiClient({ baseUrl = '', fetch: fetchImpl = globalThis.fetch.bind(globalThis), timeoutMs = 10_000 }: ApiClientOptions = {}) {
   const root = `${baseUrl.replace(/\/+$/, '')}/api/v1`
 
-  type RequestOptions = { method?: 'GET' | 'POST' | 'PATCH' | 'DELETE'; body?: unknown; csrfToken?: string; signal?: AbortSignal | undefined }
+  type RequestOptions = { method?: 'GET' | 'POST' | 'PATCH' | 'DELETE'; body?: unknown; csrfToken?: string; signal?: AbortSignal | undefined; headers?: Record<string, string> }
 
-  async function request(path: string, { method = 'GET', body: payload, csrfToken, signal }: RequestOptions = {}): Promise<unknown> {
+  async function request(path: string, options: RequestOptions = {}): Promise<unknown> {
+    return (await exchange(path, options)).body
+  }
+
+  async function exchange(path: string, { method = 'GET', body: payload, csrfToken, signal, headers: extraHeaders }: RequestOptions = {}): Promise<{ body: unknown; response: Response }> {
     const timeout = AbortSignal.timeout(timeoutMs)
     let response: Response
     try {
@@ -83,6 +109,7 @@ export function createApiClient({ baseUrl = '', fetch: fetchImpl = globalThis.fe
           Accept: 'application/json',
           ...(payload !== undefined ? { 'Content-Type': 'application/json' } : {}),
           ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
+          ...extraHeaders,
         },
         ...(payload !== undefined ? { body: JSON.stringify(payload) } : {}),
         signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
@@ -110,7 +137,7 @@ export function createApiClient({ baseUrl = '', fetch: fetchImpl = globalThis.fe
       })
     }
     if (body === null) throw new ApiError('invalid-response', 'The server sent an unreadable response.', { status: response.status })
-    return body
+    return { body, response }
   }
 
   const getJson = (path: string, signal?: AbortSignal) => request(path, { signal })
@@ -176,6 +203,31 @@ export function createApiClient({ baseUrl = '', fetch: fetchImpl = globalThis.fe
 
     async updateProfile(csrfToken: string, displayName: string | null): Promise<AuthUser> {
       return expectData(await request('/me/profile', { method: 'PATCH', csrfToken, body: { displayName } }), isAuthUser)
+    },
+
+    // ---- bookings (Stage 4C) ----
+
+    /**
+     * Requests a booking. The server validates everything, snapshots the price and holds a seat; the
+     * result is PENDING_PAYMENT (no payment is taken). Reuse the same idempotency key to retry safely.
+     */
+    async createBooking(csrfToken: string, booking: BookingRequest, idempotencyKey: string): Promise<{ booking: CustomerBooking; replayed: boolean }> {
+      const { body, response } = await exchange('/me/bookings', { method: 'POST', csrfToken, body: booking, headers: { 'Idempotency-Key': idempotencyKey } })
+      if (response.status !== 200 && response.status !== 201) throw new ApiError('invalid-response', 'The server sent an unexpected response.', { status: response.status })
+      return { booking: expectData(body, isCustomerBooking), replayed: response.status === 200 }
+    },
+
+    async listMyBookings(params: { page?: number; pageSize?: number; status?: BookingStatus } = {}, signal?: AbortSignal): Promise<{ items: CustomerBooking[]; meta: PageMeta }> {
+      const search = new URLSearchParams()
+      for (const [key, value] of Object.entries(params)) if (value !== undefined) search.set(key, String(value))
+      const body = await request(`/me/bookings${search.size ? `?${search}` : ''}`, { signal })
+      const items = expectList(body, isCustomerBooking)
+      if (!isObject(body) || !isPageMeta(body.meta)) throw new ApiError('invalid-response', 'The server sent an unexpected response.')
+      return { items, meta: body.meta }
+    },
+
+    async cancelMyBooking(csrfToken: string, bookingId: string, reason: string | null): Promise<CustomerBooking> {
+      return expectData(await request(`/me/bookings/${encodeURIComponent(bookingId)}/cancel`, { method: 'POST', csrfToken, body: reason ? { reason } : {} }), isCustomerBooking)
     },
 
     /** Server-side admin check. 403 = signed in but not an admin. */

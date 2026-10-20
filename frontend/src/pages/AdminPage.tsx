@@ -95,7 +95,6 @@ export function AdminView({ auth, check }: { auth: AuthState; check: AdminCheck 
           <button className="btn btn-quiet" type="button" onClick={() => void auth.signOut()}>Sign out</button>
         </div>
         {auth.me ? <AdminDashboard csrfToken={auth.me.csrfToken} /> : null}
-        <p className="admin-footnote">Bookings and customer records are not available yet (next stage).</p>
       </section>
     </SubPageLayout>
   )

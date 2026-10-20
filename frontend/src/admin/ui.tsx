@@ -20,21 +20,24 @@ export function LoadState<T>({ load, retry, empty, children }: { load: Load<T>; 
   return <>{children(load.data)}</>
 }
 
-/** Two-step confirmation for significant actions (e.g. cancelling), with an optional reason. */
+/** Two-step confirmation for significant actions (e.g. cancelling), with an optional or required reason. */
 export function ConfirmAction({ label, confirmLabel, withReason, disabled, onConfirm }: {
   label: string
   confirmLabel: string
-  withReason?: boolean
+  /** 'required': the confirm button stays disabled until a reason of at least 3 characters is given. */
+  withReason?: boolean | 'required'
   disabled?: boolean
   onConfirm: (reason: string | null) => Promise<unknown>
 }) {
   const [open, setOpen] = useState(false)
   const [reason, setReason] = useState('')
   if (!open) return <button className="btn btn-quiet btn-small" type="button" disabled={disabled} onClick={() => setOpen(true)}>{label}</button>
+  const reasonLabel = withReason === 'required' ? 'Reason (required)' : 'Reason (optional)'
+  const missingReason = withReason === 'required' && reason.trim().length < 3
   return (
     <span className="admin-confirm" role="group" aria-label={confirmLabel}>
-      {withReason ? <input aria-label="Reason (optional)" placeholder="Reason (optional)" value={reason} maxLength={500} onChange={(event) => setReason(event.target.value)} /> : null}
-      <button className="btn btn-small" type="button" disabled={disabled} onClick={async () => { await onConfirm(reason.trim() || null); setOpen(false); setReason('') }}>{confirmLabel}</button>
+      {withReason ? <input aria-label={reasonLabel} placeholder={reasonLabel} value={reason} maxLength={500} required={withReason === 'required'} onChange={(event) => setReason(event.target.value)} /> : null}
+      <button className="btn btn-small" type="button" disabled={disabled || missingReason} onClick={async () => { await onConfirm(reason.trim() || null); setOpen(false); setReason('') }}>{confirmLabel}</button>
       <button className="btn btn-quiet btn-small" type="button" onClick={() => setOpen(false)}>Keep</button>
     </span>
   )

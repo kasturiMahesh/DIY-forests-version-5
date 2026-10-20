@@ -74,7 +74,7 @@ describe('Stage 4A authentication', () => {
         'users_disabled_at_matches_status', 'users_display_name_not_blank', 'users_email_lowercase_format', 'users_identity_not_blank', 'users_role_matches_identity_pool',
       ])
       const status = await prismaCli(['migrate', 'status'], database.url)
-      expect(status.stdout).toMatch(/4 migrations found/) // + Stage 4B schedule_management
+      expect(status.stdout).toMatch(/5 migrations found/) // + 4B schedule_management, retire_obsolete_products, 4C booking_foundation
       expect(status.stdout).toMatch(/Database schema is up to date/)
     }, 120_000)
   })

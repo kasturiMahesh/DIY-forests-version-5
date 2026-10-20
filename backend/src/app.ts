@@ -11,6 +11,7 @@ import { createAuthModule } from './modules/auth/index.js'
 import type { CatalogRepository } from './modules/catalog/catalog.repository.js'
 import { catalogRouter } from './modules/catalog/catalog.routes.js'
 import { healthRouter } from './routes/health.js'
+import { readinessRouter, type ReadinessOptions } from './routes/ready.js'
 
 export type AppOptions = {
   env: Env
@@ -20,9 +21,11 @@ export type AppOptions = {
   catalog?: CatalogRepository | null
   /** Authentication routes (createAuthModule). Defaults to auth disabled: sign-in reports unavailable. */
   auth?: Router
+  /** GET /ready dependencies. Defaults to no database: readiness then reports 503 not_configured. */
+  readiness?: ReadinessOptions
 }
 
-export function createApp({ env, version, logger = createLogger(env.nodeEnv), catalog = null, auth }: AppOptions): Express {
+export function createApp({ env, version, logger = createLogger(env.nodeEnv), catalog = null, auth, readiness = { checkDatabase: null } }: AppOptions): Express {
   const app = express()
   app.disable('x-powered-by')
   // Only trust X-Forwarded-* from the configured number of proxies (client IP for rate limiting).
@@ -36,6 +39,7 @@ export function createApp({ env, version, logger = createLogger(env.nodeEnv), ca
 
   const v1 = express.Router()
   v1.use(healthRouter(version))
+  v1.use(readinessRouter(readiness))
   v1.use(catalogRouter(catalog))
   v1.use(auth ?? createAuthModule({ config: loadAuthConfig({}, env), repository: null, logger }))
   app.use('/api/v1', v1)

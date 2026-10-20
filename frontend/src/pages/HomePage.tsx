@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react'
 import { AccountLink } from '../auth/AccountLink'
 import accountLinkCss from '../styles/account-link.css?inline'
 import homeCss from '../styles/home.css?inline'
@@ -6,8 +6,12 @@ import {
   OFFLINE, PROGRAMS, REVIEWS, TRAINEES, TRAININGS, WEBINAR_CART_ART, money,
   type Art, type Currency, type Trainee, type Training,
 } from '../data'
+import { api, newIdempotencyKey } from '../api/client'
 import { calendarDaysInclusive, formatDateRange, formatDayMonth, formatPrice, formatSessionDateTime, formatTime, staticMoney } from '../api/format'
 import type { Money, PublicSession } from '../api/types'
+import { useAuth } from '../auth/auth-context'
+import { PHONE_COUNTRIES, bookingWhen } from '../bookings/booking-display'
+import { requestBookings, type CheckoutResult } from '../bookings/checkout'
 import { priceFor, useCatalog, type CatalogState } from '../catalog/catalog-context'
 import { WebinarBanner } from '../catalog/WebinarBanner'
 import { webinar } from '../webinarData'
@@ -24,12 +28,6 @@ const BrandMark = ({ fill, stroke }: { fill: string; stroke: string }) => (
 )
 const ArtImage = ({ art }: { art: Art }) => <img src={art.src} alt={art.alt} loading="lazy" decoding="async" />
 
-const PAY_METHODS = [
-  { id: 'upi', label: 'UPI', icon: <svg viewBox="0 0 24 24" fill="none"><path d="M4 12h16M4 6h16M4 18h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg> },
-  { id: 'card', label: 'Card', icon: <svg viewBox="0 0 24 24" fill="none"><rect x="3" y="6" width="18" height="13" rx="2" stroke="currentColor" strokeWidth="1.8" /><path d="M3 10h18" stroke="currentColor" strokeWidth="1.8" /></svg> },
-  { id: 'netbanking', label: 'Netbanking', icon: <svg viewBox="0 0 24 24" fill="none"><path d="M4 10l8-6 8 6M5 10v9h14v-9M10 19v-6h4v6" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" /></svg> },
-]
-
 const NAV_ITEMS = [
   ['trainings', 'Trainings'], ['how-it-works', 'How It Works'], ['offline', 'Offline Workshop'], ['webinar', 'Webinar'],
   ['trainees', 'Trainees'], ['programs', 'Projects'], ['reviews', 'Reviews'],
@@ -38,8 +36,23 @@ const NAV_ITEMS = [
 const reduceMotion = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
 
 /* ---------------- Cart state ---------------- */
-type CartItem = { cartId: string; title: string; price: number; currency: Currency; meta: string; art: Art }
-const CART_KEY = 'afforestt_training_cart_v1'
+/** What the server needs to book this item: the product and exactly one published session or cohort. */
+type BookingTarget = { productId: string; sessionId: string } | { productId: string; cohortId: string }
+/**
+ * `price`/`currency` are the catalog figures shown while browsing; the booking's real price is the
+ * server's snapshot. `bookingKey` is the idempotency key for this item, so retrying a checkout after a
+ * network failure can never book it twice.
+ */
+type CartItem = { cartId: string; title: string; price: number; currency: Currency; meta: string; art: Art; booking: BookingTarget; bookingKey: string }
+// v2: items carry a real booking target. Demo-cart items from v1 (no target) cannot be booked and are not loaded.
+const CART_KEY = 'afforestt_training_cart_v2'
+const isString = (value: unknown): value is string => typeof value === 'string' && value.length > 0
+const isBookingTarget = (value: unknown): value is BookingTarget => {
+  if (typeof value !== 'object' || value === null) return false
+  const target = value as Record<string, unknown>
+  return isString(target.productId) && (isString(target.sessionId) !== isString(target.cohortId))
+}
+const sameTarget = (a: BookingTarget, b: BookingTarget) => JSON.stringify(a) === JSON.stringify(b)
 
 /* ---------------- Catalog prices ---------------- */
 const isCartCurrency = (currency: string): currency is Currency => currency === 'USD' || currency === 'INR'
@@ -59,48 +72,41 @@ const cartPrice = (price: Money) => ({ price: Number(price.amount), currency: pr
 function loadCart(): CartItem[] {
   try {
     const raw = localStorage.getItem(CART_KEY)
-    const items = raw ? JSON.parse(raw) : []
+    const items: unknown = raw ? JSON.parse(raw) : []
     if (!Array.isArray(items)) return []
-    return items.map((item) => {
-      // The static page stored `art` as an HTML string; accept that shape too.
-      if (typeof item.art === 'string') {
-        const src = /src="([^"]*)"/.exec(item.art)?.[1] ?? ''
-        const alt = /alt="([^"]*)"/.exec(item.art)?.[1] ?? ''
-        return { ...item, currency: item.currency || 'INR', art: { src, alt } }
-      }
-      return { ...item, currency: item.currency || 'INR' }
-    })
+    return items.filter((item): item is CartItem =>
+      typeof item === 'object' && item !== null && isString(item.cartId) && isString(item.title) && typeof item.price === 'number' &&
+      (item.currency === 'USD' || item.currency === 'INR') && isBookingTarget(item.booking) && isString(item.bookingKey) &&
+      typeof item.art === 'object' && item.art !== null)
   } catch {
     return []
   }
 }
 
+/** Sum of listed prices per currency. No tax is calculated in the browser; prices are shown as listed. */
 function cartTotals(items: CartItem[]) {
-  const totals: { currency: Currency; subtotal: number; gst: number; total: number }[] = []
+  const totals: { currency: Currency; total: number }[] = []
   items.forEach((item) => {
     let group = totals.find((entry) => entry.currency === item.currency)
     if (!group) {
-      group = { currency: item.currency, subtotal: 0, gst: 0, total: 0 }
+      group = { currency: item.currency, total: 0 }
       totals.push(group)
     }
-    group.subtotal += item.price
-  })
-  totals.forEach((group) => {
-    group.gst = Math.round(group.subtotal * 0.18)
-    group.total = group.subtotal + group.gst
+    group.total += item.price
   })
   return totals
 }
 
-function formatCartTotals(totals: ReturnType<typeof cartTotals>, key: 'subtotal' | 'gst' | 'total') {
-  return totals.map((group) => (totals.length > 1 ? `${group.currency} ${money(group[key], group.currency)}` : money(group[key], group.currency))).join(' · ')
+function formatCartTotals(totals: ReturnType<typeof cartTotals>) {
+  return totals.map((group) => (totals.length > 1 ? `${group.currency} ${money(group.total, group.currency)}` : money(group.total, group.currency))).join(' · ')
 }
+
 
 type ModalState =
   | { kind: 'training'; training: Training }
   | { kind: 'offline' }
   | { kind: 'checkout' }
-  | { kind: 'success'; name: string; count: number }
+  | { kind: 'result'; results: CheckoutResult[] }
   | { kind: 'trainee'; trainee: Trainee; trigger: HTMLElement | null }
   | null
 
@@ -325,7 +331,8 @@ export function DateChipModal({ heading, art, intro, chips, availability, chipLa
   heading: string
   art: Art
   intro: ReactNode
-  chips: { key: string; label: string; small: string }[]
+  /** `soldOut` comes from the server's seatsAvailable; the booking request re-checks it. */
+  chips: { key: string; label: string; small: string; soldOut?: boolean }[]
   availability: 'loading' | 'ready' | 'error'
   chipLabel: string
   emptyLabel: string
@@ -352,7 +359,7 @@ export function DateChipModal({ heading, art, intro, chips, availability, chipLa
         </p>
       ) : (
         <div className="date-chip-grid">
-          {chips.map((chip, i) => <button key={chip.key} className={`chip-date${selectedIdx === i ? ' is-selected' : ''}`} data-idx={i} onClick={() => setSelectedIdx(i)}>{chip.label}<small>{chip.small}</small></button>)}
+          {chips.map((chip, i) => <button key={chip.key} className={`chip-date${selectedIdx === i ? ' is-selected' : ''}`} data-idx={i} disabled={chip.soldOut} onClick={() => setSelectedIdx(i)}>{chip.label}<small>{chip.soldOut ? 'Fully booked' : chip.small}</small></button>)}
         </div>
       )}
       {selectedIdx !== null && detail ? <p style={{ fontSize: '.85rem', margin: '-8px 0 14px' }}>{detail(selectedIdx)}</p> : null}
@@ -440,8 +447,139 @@ function TraineeProfile({ trainee, onClose }: { trainee: Trainee; onClose: () =>
   )
 }
 
+/* ---------------- Checkout (Stage 4C: real booking requests, no payment) ---------------- */
+const SIGN_IN_RETURN = '/#trainings'
+
+/**
+ * Sends one booking request per cart item, each with its own idempotency key, and reports exactly what
+ * the server answered. Nothing is shown as booked unless the server returned the booking.
+ */
+export function CheckoutPanel({ cart, onClose, onDone, onRotateKey }: {
+  cart: CartItem[]
+  onClose: () => void
+  /** Called with every result once all requests have finished (booked items leave the cart). */
+  onDone: (results: CheckoutResult[]) => void
+  /** The server said this key was used for a different booking: the item needs a fresh key. */
+  onRotateKey: (cartId: string) => void
+}) {
+  const auth = useAuth()
+  const [processing, setProcessing] = useState(false)
+  const [fieldError, setFieldError] = useState<string | null>(null)
+  const [country, setCountry] = useState<string>('IN')
+  const sending = useRef(false)
+  const totals = cartTotals(cart)
+
+  const summary = (
+    <>
+      <button className="icon-btn close-x" id="modalCloseBtn" aria-label="Close" onClick={onClose}><CloseIcon /></button>
+      <h3>Order summary</h3><p style={{ marginBottom: 6 }}>Review your booking request.</p>
+      {cart.map((item) => <div className="order-line" key={item.cartId}><span>{item.title}<small>{item.meta}</small></span><span>{money(item.price, item.currency)}</span></div>)}
+      <div className="order-total"><span>Total</span><span>{formatCartTotals(totals)}</span></div>
+    </>
+  )
+  const footnote = <p style={{ fontSize: '.76rem', textAlign: 'center', margin: '12px 0 0' }}>No payment is taken now. Online payment isn’t available yet, so each booking is held for you as <strong>pending payment</strong>.</p>
+
+  if (auth.status === 'loading') return <>{summary}<p role="status" style={{ marginTop: 16 }}>Checking your sign-in…</p></>
+  if (auth.status === 'unavailable' || auth.status === 'error') {
+    return (
+      <>{summary}
+        <p className="checkout-error" role="alert">{auth.status === 'unavailable' ? 'Booking isn’t available at the moment because sign-in is unavailable.' : 'We couldn’t reach the server.'}</p>
+        <button className="btn btn-primary btn-block" style={{ marginTop: 18 }} type="button" onClick={auth.refresh}>Try again</button>
+      </>
+    )
+  }
+  if (auth.status === 'signed-out' || !auth.me) {
+    return (
+      <>{summary}
+        <p style={{ marginTop: 16 }} role={auth.expired ? 'alert' : undefined}>{auth.expired ? 'Your session has expired. ' : ''}Please sign in or create an account to book. Your cart is kept.</p>
+        <a className="btn btn-primary btn-block" style={{ marginTop: 12 }} href={api.signInUrl(SIGN_IN_RETURN)}>Sign in to book</a>
+        <a className="btn btn-outline btn-block" style={{ marginTop: 10 }} href={api.registerUrl(SIGN_IN_RETURN)}>Create an account</a>
+        {footnote}
+      </>
+    )
+  }
+  const { user, session, csrfToken } = auth.me
+  if (session.kind !== 'CUSTOMER' || user.role !== 'CUSTOMER') {
+    return <>{summary}<p className="checkout-error" role="alert">You’re signed in with a staff account. Bookings are made with a customer account.</p></>
+  }
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (sending.current) return // one submission at a time
+    const form = event.currentTarget.elements
+    const contactName = (form.namedItem('name') as HTMLInputElement).value.trim()
+    const number = (form.namedItem('phone') as HTMLInputElement).value
+    sending.current = true
+    setProcessing(true)
+    setFieldError(null)
+    try {
+      const outcome = await requestBookings(api, csrfToken, cart, { contactName, phone: { country, number } })
+      if (outcome.kind === 'expired') return auth.sessionExpired()
+      if (outcome.kind === 'field-error') return setFieldError(outcome.message)
+      outcome.rotateKeys.forEach(onRotateKey)
+      onDone(outcome.results)
+    } finally {
+      sending.current = false
+      setProcessing(false)
+    }
+  }
+
+  return (
+    <>{summary}
+      <form id="checkoutForm" onSubmit={submit}>
+        <div className="checkout-fields">
+          <label htmlFor="checkoutName">Full name<input id="checkoutName" name="name" autoComplete="name" required maxLength={100} defaultValue={user.displayName ?? ''} /></label>
+          <label htmlFor="checkoutEmail">Email address<input id="checkoutEmail" name="email" type="email" value={user.email} readOnly aria-describedby="checkoutEmailNote" /></label>
+          <small id="checkoutEmailNote" style={{ marginTop: -6, color: 'var(--ink-soft)', fontSize: '.74rem' }}>From your account.</small>
+          <div className="checkout-phone">
+            <label htmlFor="checkoutCountry">Country<select id="checkoutCountry" name="country" value={country} autoComplete="tel-country-code" onChange={(event) => setCountry(event.target.value)}>
+              {PHONE_COUNTRIES.map((option) => <option key={option.code} value={option.code}>{option.label} (+{option.dial})</option>)}
+            </select></label>
+            <label htmlFor="checkoutPhone">Phone number<input id="checkoutPhone" name="phone" type="tel" autoComplete="tel-national" inputMode="tel" required maxLength={20} pattern="[0-9+\(\) .\-]{4,20}" title="Digits, spaces and + ( ) - only" /></label>
+          </div>
+        </div>
+        {fieldError ? <p className="checkout-error" role="alert">{fieldError}</p> : null}
+        <button className="btn btn-primary btn-block" style={{ marginTop: 18 }} id="payNowBtn" type="submit" disabled={processing || cart.length === 0}>{processing ? 'Sending your booking…' : `Request booking${cart.length > 1 ? 's' : ''}`}</button>
+      </form>
+      {footnote}
+    </>
+  )
+}
+
+/** What the server answered for each item. A successful booking is pending payment, never "paid". */
+export function CheckoutResults({ results, onClose }: { results: CheckoutResult[]; onClose: () => void }) {
+  const booked = results.filter((result) => result.ok)
+  const failed = results.filter((result) => !result.ok)
+  return (
+    <>
+      <button className="icon-btn close-x" id="modalCloseBtn2" aria-label="Close" onClick={onClose}><CloseIcon /></button>
+      <div className="pay-success">
+        {booked.length ? <svg viewBox="0 0 64 64" fill="none" aria-hidden="true"><circle cx="32" cy="32" r="30" fill="var(--forest)" /><path d="M20 33l8 8 16-18" stroke="var(--on-forest)" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" /></svg> : null}
+        <h3>{booked.length === 0 ? 'Booking not completed' : failed.length ? 'Some bookings were received' : `Booking${booked.length > 1 ? 's' : ''} received: payment pending`}</h3>
+        {booked.length ? <p>Your seat is held. <strong>No payment has been taken</strong>; the booking stays pending payment until payment is arranged.</p> : null}
+        <ul className="booking-results">
+          {results.map((result) => result.ok ? (
+            <li key={result.cartId}>
+              <strong>{result.booking.product.name}</strong> · {result.booking.reference}
+              <small>{bookingWhen(result.booking.target)}</small>
+              <small>Pending payment · {formatPrice(result.booking.price)}</small>
+            </li>
+          ) : (
+            <li key={result.cartId} className="is-failed" role="alert">
+              <strong>{result.title}: not booked</strong>
+              <small>{result.message}</small>
+            </li>
+          ))}
+        </ul>
+        {booked.length ? <a className="btn btn-primary btn-block" id="doneBtn" href="/account">View my bookings</a> : null}
+        {failed.length ? <p style={{ fontSize: '.8rem', marginTop: 10 }}>Items that weren’t booked are still in your cart.</p> : null}
+        <button className={`btn ${booked.length ? 'btn-outline' : 'btn-primary'} btn-block`} style={{ marginTop: 10 }} type="button" onClick={onClose}>Close</button>
+      </div>
+    </>
+  )
+}
+
 /* ---------------- Page ---------------- */
-type ConfettiPiece = { id: number; left: number; background: string; duration: number; radius: string }
 
 export default function HomePage() {
   const [cart, setCart] = useState<CartItem[]>(loadCart)
@@ -452,15 +590,11 @@ export default function HomePage() {
   const [activeSection, setActiveSection] = useState('')
   const [showTop, setShowTop] = useState(false)
   const [toast, setToast] = useState({ text: 'Added to cart', show: false })
-  const [payMethod, setPayMethod] = useState('upi')
-  const [processing, setProcessing] = useState(false)
-  const [confetti, setConfetti] = useState<ConfettiPiece[]>([])
   const catalog = useCatalog()
   const toastTimer = useRef<number | undefined>(undefined)
   const modalBodyRef = useRef<HTMLDivElement>(null)
   const cartBtnRef = useRef<HTMLButtonElement>(null)
   const reserveHandled = useRef(false)
-  const confettiSeq = useRef(0)
 
   useEffect(() => { document.title = 'DIY Forests — Trainings' }, [])
 
@@ -483,12 +617,18 @@ export default function HomePage() {
     toastTimer.current = window.setTimeout(() => setToast((current) => ({ ...current, show: false })), 2600)
   }, [])
 
-  const addToCart = useCallback((item: Omit<CartItem, 'cartId'>) => {
-    setCart((current) => [...current, { ...item, cartId: `c${Date.now()}${Math.random().toString(16).slice(2)}` }])
+  const addToCart = useCallback((item: Omit<CartItem, 'cartId' | 'bookingKey'>) => {
+    // One seat per customer per date: the same dates can only be in the cart once.
+    if (cart.some((entry) => sameTarget(entry.booking, item.booking))) {
+      showToast(`“${item.title}” is already in your cart`)
+      setCartOpen(true)
+      return
+    }
+    setCart((current) => [...current, { ...item, cartId: `c${Date.now()}${Math.random().toString(16).slice(2)}`, bookingKey: newIdempotencyKey() }])
     setCartBump((count) => count + 1)
     showToast(`Added “${item.title}” to cart`)
     setCartOpen(true)
-  }, [showToast])
+  }, [cart, showToast])
 
   const closeModal = useCallback(() => {
     setModal((current) => {
@@ -500,10 +640,10 @@ export default function HomePage() {
     })
   }, [])
 
-  // Adds the published session to the demo cart (browser-only; no booking or seat is reserved yet).
+  // Adds the published session to the cart. A seat is reserved only when checkout succeeds on the server.
   const reserveWebinar = useCallback((session: PublicSession) => {
     const price = isCartCurrency(session.product.price.currency) ? session.product.price : staticMoney(webinar.price, 'INR')
-    addToCart({ title: session.product.name, ...cartPrice(price), meta: formatSessionDateTime(session.startsAt), art: WEBINAR_CART_ART })
+    addToCart({ title: session.product.name, ...cartPrice(price), meta: formatSessionDateTime(session.startsAt), art: WEBINAR_CART_ART, booking: { productId: session.product.id, sessionId: session.id } })
   }, [addToCart])
 
   // ?reserve=webinar (from the webinar page) adds the webinar on arrival, like the original,
@@ -514,7 +654,7 @@ export default function HomePage() {
     reserveHandled.current = true
     // One-time sync with external inputs (the URL and the network result), guarded by reserveHandled.
     // oxlint-disable-next-line react/set-state-in-effect
-    if (catalog.status === 'ready' && catalog.nextWebinar) reserveWebinar(catalog.nextWebinar)
+    if (catalog.status === 'ready' && catalog.nextWebinar && catalog.nextWebinar.seatsAvailable !== 0) reserveWebinar(catalog.nextWebinar)
     // Drop the query so a refresh doesn't add it a second time.
     window.history.replaceState(null, '', `${window.location.pathname}${window.location.hash}`)
   }, [catalog.status, catalog.nextWebinar, reserveWebinar])
@@ -570,21 +710,6 @@ export default function HomePage() {
     }
   }, [traineeOpen, closeModal])
 
-  const fireConfetti = () => {
-    if (reduceMotion) return
-    const colors = ['#493631', '#A5644B', '#D3A080', '#F7F1E4', '#C77F65']
-    const base = (confettiSeq.current += 28)
-    const pieces = Array.from({ length: 28 }, (_, i) => ({
-      id: base + i,
-      left: Math.random() * 100,
-      background: colors[Math.floor(Math.random() * colors.length)],
-      duration: 2 + Math.random() * 1.5,
-      radius: Math.random() > 0.5 ? '50%' : '2px',
-    }))
-    setConfetti((current) => [...current, ...pieces])
-    window.setTimeout(() => setConfetti((current) => current.filter((piece) => !pieces.includes(piece))), 4000)
-  }
-
   const totals = cartTotals(cart)
   const indepth = TRAININGS.find((training) => training.id === 'indepth')!
   const onlinePrice = catalogPrice(catalog, 'online-training', staticMoney(indepth.price, indepth.currency ?? 'INR'))
@@ -606,7 +731,7 @@ export default function HomePage() {
           heading={t.title}
           art={{ src: t.image, alt: t.imageAlt }}
           intro={<><p>{t.tagline}</p><p style={{ fontSize: '.85rem' }}><strong>Suitable for:</strong> {t.audience}</p></>}
-          chips={cohorts.map((cohort) => ({ key: cohort.id, label: formatDayMonth(cohort.sessions[0]!.startsAt), small: `& ${formatDayMonth(cohort.sessions[1]!.startsAt)} · ${formatTime(cohort.sessions[0]!.startsAt)}` }))}
+          chips={cohorts.map((cohort) => ({ key: cohort.id, label: formatDayMonth(cohort.sessions[0]!.startsAt), small: `& ${formatDayMonth(cohort.sessions[1]!.startsAt)} · ${formatTime(cohort.sessions[0]!.startsAt)}`, soldOut: cohort.seatsAvailable === 0 }))}
           availability={catalog.status}
           chipLabel="Choose your two Friday evening sessions"
           emptyLabel="Select dates to continue"
@@ -616,7 +741,8 @@ export default function HomePage() {
           onRetry={catalog.retry}
           onClose={closeModal}
           onAdd={(index) => {
-            addToCart({ title: t.title, ...cartPrice(trainingPrice(t)), meta: `${t.duration} · ${fridays(index)} · ${formatTime(cohorts[index]!.sessions[0]!.startsAt)}`, art: { src: t.image, alt: t.imageAlt } })
+            const cohort = cohorts[index]!
+            addToCart({ title: t.title, ...cartPrice(trainingPrice(t)), meta: `${t.duration} · ${fridays(index)} · ${formatTime(cohort.sessions[0]!.startsAt)}`, art: { src: t.image, alt: t.imageAlt }, booking: { productId: cohort.product.id, cohortId: cohort.id } })
             closeModal()
           }}
         >
@@ -636,7 +762,7 @@ export default function HomePage() {
           heading="Offline Workshop"
           art={{ src: OFFLINE.image, alt: OFFLINE.imageAlt }}
           intro={<p>Pick the 5-day batch that works for you. Food and accommodation are included.</p>}
-          chips={batches.map((batch, index) => ({ key: batch.id, label: range(index), small: `${calendarDaysInclusive(batch.startsAt, batch.endsAt ?? batch.startsAt)} days` }))}
+          chips={batches.map((batch, index) => ({ key: batch.id, label: range(index), small: `${calendarDaysInclusive(batch.startsAt, batch.endsAt ?? batch.startsAt)} days`, soldOut: batch.seatsAvailable === 0 }))}
           availability={catalog.status}
           chipLabel="Choose your batch"
           emptyLabel="Select a batch to continue"
@@ -646,7 +772,8 @@ export default function HomePage() {
           onRetry={catalog.retry}
           onClose={closeModal}
           onAdd={(index) => {
-            addToCart({ title: 'Offline Workshop', ...cartPrice(offlinePrice), meta: `${range(index)} · ${batches[index]!.venue ?? 'in person'}`, art: { src: OFFLINE.image, alt: OFFLINE.imageAlt } })
+            const batch = batches[index]!
+            addToCart({ title: 'Offline Workshop', ...cartPrice(offlinePrice), meta: `${range(index)} · ${batch.venue ?? 'in person'}`, art: { src: OFFLINE.image, alt: OFFLINE.imageAlt }, booking: { productId: batch.product.id, sessionId: batch.id } })
             closeModal()
           }}
         />
@@ -654,51 +781,21 @@ export default function HomePage() {
     }
     if (modal.kind === 'checkout') {
       return (
-        <>
-          <button className="icon-btn close-x" id="modalCloseBtn" aria-label="Close" onClick={closeModal}><CloseIcon /></button>
-          <h3>Order summary</h3><p style={{ marginBottom: 6 }}>Review before payment.</p>
-          {cart.map((item) => <div className="order-line" key={item.cartId}><span>{item.title}<small>{item.meta}</small></span><span>{money(item.price, item.currency)}</span></div>)}
-          {totals.map((group) => <div className="order-line" key={group.currency}><span>GST (18%){totals.length > 1 ? ` (${group.currency})` : ''}</span><span>{money(group.gst, group.currency)}</span></div>)}
-          <div className="order-total"><span>Total</span><span>{formatCartTotals(totals, 'total')}</span></div>
-          <form id="checkoutForm" onSubmit={(event) => {
-            event.preventDefault()
-            const name = (event.currentTarget.elements.namedItem('name') as HTMLInputElement).value.trim()
-            const count = cart.length
-            setProcessing(true)
-            window.setTimeout(() => {
-              setProcessing(false)
-              setModal({ kind: 'success', name, count })
-              fireConfetti()
-            }, 900)
-          }}>
-            <div className="checkout-fields">
-              <label htmlFor="checkoutName">Full name<input id="checkoutName" name="name" autoComplete="name" required maxLength={100} /></label>
-              <label htmlFor="checkoutEmail">Email address<input id="checkoutEmail" name="email" type="email" autoComplete="email" required maxLength={254} /></label>
-              <label htmlFor="checkoutPhone">Phone number<input id="checkoutPhone" name="phone" type="tel" autoComplete="tel" inputMode="tel" required pattern="[0-9+() -]{7,20}" title="Enter a valid phone number" /></label>
-            </div>
-            <p style={{ fontSize: '.82rem', fontWeight: 600, color: 'var(--ink)', margin: '16px 0 4px' }}>Payment method</p>
-            <div className="pay-methods" id="payMethods">
-              {/* type="button": in the original these default to submit, so picking a method could submit the form. */}
-              {PAY_METHODS.map((method) => <button key={method.id} type="button" className={`pay-chip${method.id === payMethod ? ' is-selected' : ''}`} data-pm={method.id} onClick={() => setPayMethod(method.id)}>{method.icon}{method.label}</button>)}
-            </div>
-            <button className="btn btn-primary btn-block" style={{ marginTop: 18 }} id="payNowBtn" type="submit" disabled={processing}>{processing ? 'Processing…' : 'Complete demo booking'}</button>
-          </form>
-          <p style={{ fontSize: '.76rem', textAlign: 'center', margin: '12px 0 0' }}>Demo only: no real payment or booking is processed.</p>
-        </>
+        <CheckoutPanel
+          cart={cart}
+          onClose={closeModal}
+          onRotateKey={(cartId) => setCart((current) => current.map((item) => (item.cartId === cartId ? { ...item, bookingKey: newIdempotencyKey() } : item)))}
+          onDone={(results) => {
+            // Only items the server actually booked leave the cart; failed ones stay (same key) for a safe retry.
+            const booked = new Set(results.filter((result) => result.ok).map((result) => result.cartId))
+            setCart((current) => current.filter((item) => !booked.has(item.cartId)))
+            setModal({ kind: 'result', results })
+          }}
+        />
       )
     }
-    if (modal.kind === 'success') {
-      return (
-        <>
-          <button className="icon-btn close-x" id="modalCloseBtn2" aria-label="Close" onClick={closeModal}><CloseIcon /></button>
-          <div className="pay-success">
-            <svg viewBox="0 0 64 64" fill="none"><circle cx="32" cy="32" r="30" fill="var(--forest)" /><path d="M20 33l8 8 16-18" stroke="var(--on-forest)" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" /></svg>
-            <h3>Demo booking complete</h3>
-            <p>Thanks, {modal.name}. Your demo checkout includes {modal.count} item{modal.count > 1 ? 's' : ''}. No payment was taken and no booking was submitted.</p>
-            <button className="btn btn-primary btn-block" id="doneBtn" onClick={() => { setCart([]); closeModal(); closeCart() }}>Done</button>
-          </div>
-        </>
-      )
+    if (modal.kind === 'result') {
+      return <CheckoutResults results={modal.results} onClose={() => { closeModal(); if (cart.length === 0) closeCart() }} />
     }
     return <TraineeProfile trainee={modal.trainee} onClose={closeModal} />
   }
@@ -911,9 +1008,8 @@ export default function HomePage() {
           ))}
         </div>
         <div className="cart-summary" id="cartSummary" style={{ display: cart.length ? 'block' : 'none' }}>
-          <div className="cart-row"><span>Subtotal</span><span id="cartSubtotal">{formatCartTotals(totals, 'subtotal')}</span></div>
-          <div className="cart-row"><span>GST (18%)</span><span id="cartGst">{formatCartTotals(totals, 'gst')}</span></div>
-          <div className="cart-row total"><span>Total</span><span className="price" id="cartTotal">{formatCartTotals(totals, 'total')}</span></div>
+          <div className="cart-row total"><span>Total</span><span className="price" id="cartTotal">{formatCartTotals(totals)}</span></div>
+          <p style={{ fontSize: '.76rem', margin: '6px 0 10px' }}>Prices as listed. No payment is taken at checkout: bookings are held as pending payment.</p>
           <button className="btn btn-primary btn-block" id="checkoutBtn" onClick={() => { if (cart.length) setModal({ kind: 'checkout' }) }}>Proceed to checkout</button>
         </div>
       </aside>
@@ -935,7 +1031,6 @@ export default function HomePage() {
 
       <button className={`top-btn${showTop ? ' show' : ''}`} id="topBtn" aria-label="Back to top" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}><svg viewBox="0 0 24 24" fill="none"><path d="M12 19V5M5 12l7-7 7 7" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" /></svg></button>
 
-      {confetti.map((piece) => <div key={piece.id} className="confetti-piece" style={{ left: `${piece.left}vw`, background: piece.background, animationDuration: `${piece.duration}s`, borderRadius: piece.radius }} />)}
     </>
   )
 }

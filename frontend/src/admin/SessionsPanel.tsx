@@ -48,14 +48,14 @@ export function SessionsPanel({ api, kind }: { api: AdminApi; kind: Kind }) {
           <>
             <div className="admin-table-wrap">
               <table className="admin-table">
-                <thead><tr><th scope="col">When (IST)</th><th scope="col">Product</th>{kind === 'OFFLINE_WORKSHOP' ? <th scope="col">Venue</th> : null}<th scope="col">Capacity</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead>
+                <thead><tr><th scope="col">When (IST)</th><th scope="col">Product</th>{kind === 'OFFLINE_WORKSHOP' ? <th scope="col">Venue</th> : null}<th scope="col">Booked / capacity</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead>
                 <tbody>
                   {data.items.map((session) => (
                     <tr key={session.id}>
                       <td>{formatIst(session.startsAt)}{session.endsAt ? <><br /><small>until {formatIst(session.endsAt)}</small></> : null}</td>
                       <td>{session.product.name}{session.product.isActive ? null : <><br /><small>product inactive</small></>}</td>
                       {kind === 'OFFLINE_WORKSHOP' ? <td>{session.venue ?? '—'}</td> : null}
-                      <td>{session.capacity ?? '—'}</td>
+                      <td>{session.seatsHeld} / {session.capacity ?? 'no limit'}</td>
                       <td><StatusBadge status={session.status} /></td>
                       <td className="admin-actions">
                         {session.status !== 'CANCELLED' ? <button className="btn btn-quiet btn-small" type="button" onClick={() => setEditing({ mode: 'edit', session })}>{session.status === 'PUBLISHED' ? 'Edit / reschedule' : 'Edit'}</button> : null}

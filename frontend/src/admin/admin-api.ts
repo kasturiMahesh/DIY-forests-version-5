@@ -1,5 +1,5 @@
 import { ApiError, type ApiClient } from '../api/client'
-import type { AdminCohort, AdminProduct, AdminSession, DashboardSummary, Money, Paged, ProductType, ScheduleStatus } from '../api/types'
+import type { AdminBooking, AdminBookingSummary, AdminCohort, AdminProduct, AdminSession, BookingStatus, DashboardSummary, Money, Paged, ProductType, ScheduleStatus } from '../api/types'
 
 // Typed client for the Stage 4B admin API. Every call goes through the shared transport (cookies,
 // timeouts, error envelopes). Writes send the session's CSRF token. Responses are shape-checked.
@@ -9,7 +9,10 @@ const hasId = (value: unknown): value is Record<string, unknown> & { id: string 
 const isProduct = (value: unknown): value is AdminProduct => hasId(value) && typeof value.slug === 'string' && typeof value.isActive === 'boolean' && isObject(value.price) && typeof value.price.amount === 'string'
 const isSession = (value: unknown): value is AdminSession => hasId(value) && typeof value.startsAt === 'string' && typeof value.status === 'string' && isObject(value.product)
 const isCohort = (value: unknown): value is AdminCohort => hasId(value) && typeof value.status === 'string' && Array.isArray(value.sessions) && isObject(value.product)
-const isDashboard = (value: unknown): value is DashboardSummary => isObject(value) && isObject(value.products) && isObject(value.upcoming)
+const isDashboard = (value: unknown): value is DashboardSummary => isObject(value) && isObject(value.products) && isObject(value.upcoming) && isObject(value.bookings)
+const isBookingSummary = (value: unknown): value is AdminBookingSummary =>
+  hasId(value) && typeof value.reference === 'string' && (value.status === 'PENDING_PAYMENT' || value.status === 'CANCELLED') && isObject(value.customer) && isObject(value.price) && isObject(value.target)
+const isBooking = (value: unknown): value is AdminBooking => isBookingSummary(value) && isObject((value as Record<string, unknown>).contact)
 
 const unexpected = () => new ApiError('invalid-response', 'The server sent an unexpected response.')
 function item<T>(body: unknown, guard: (value: unknown) => value is T): T {
@@ -65,6 +68,12 @@ export function createAdminApi(client: ApiClient, csrfToken: string) {
     updateCohort: async (cohortId: string, changes: CohortChanges) => item(await patch(`/cohorts/${id(cohortId)}`, changes), isCohort),
     publishCohort: async (cohortId: string) => item(await post(`/cohorts/${id(cohortId)}/publish`), isCohort),
     cancelCohort: async (cohortId: string, reason: string | null) => item(await post(`/cohorts/${id(cohortId)}/cancel`, { reason }), isCohort),
+
+    listBookings: async (params: ListParams & { status?: BookingStatus; productId?: string; q?: string } = {}, signal?: AbortSignal) =>
+      page(await get(`/bookings${query(params)}`, signal), isBookingSummary),
+    getBooking: async (bookingId: string, signal?: AbortSignal) => item(await get(`/bookings/${id(bookingId)}`, signal), isBooking),
+    /** The reason is required by the server (at least 3 characters). */
+    cancelBooking: async (bookingId: string, reason: string) => item(await post(`/bookings/${id(bookingId)}/cancel`, { reason }), isBooking),
   }
 }
 

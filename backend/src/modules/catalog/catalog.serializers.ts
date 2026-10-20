@@ -6,10 +6,12 @@ import type { PublicCohort, PublicProduct, PublicProductRef, PublicSession } fro
 
 type ProductRow = Pick<Product, 'id' | 'slug' | 'name' | 'type' | 'summary' | 'description' | 'audience' | 'durationLabel' | 'priceAmount' | 'currency'>
 type ProductRefRow = Pick<Product, 'id' | 'slug' | 'name' | 'type' | 'priceAmount' | 'currency'>
-type SessionRow = Pick<Session, 'id' | 'startsAt' | 'endsAt' | 'timezone' | 'capacity' | 'venue'> & { product: ProductRefRow }
-type CohortRow = Pick<TrainingCohort, 'id' | 'timezone' | 'capacity'> & { product: ProductRefRow; sessions: Pick<Session, 'cohortSequence' | 'startsAt' | 'endsAt'>[] }
+type SessionRow = Pick<Session, 'id' | 'startsAt' | 'endsAt' | 'timezone' | 'capacity' | 'seatsHeld' | 'venue'> & { product: ProductRefRow }
+type CohortRow = Pick<TrainingCohort, 'id' | 'timezone' | 'capacity' | 'seatsHeld'> & { product: ProductRefRow; sessions: Pick<Session, 'cohortSequence' | 'startsAt' | 'endsAt'>[] }
 
 const money = (row: Pick<Product, 'priceAmount' | 'currency'>) => ({ amount: row.priceAmount.toFixed(2), currency: row.currency })
+/** Seats not held by active bookings; null when no capacity is set (no limit). Never negative. */
+const seatsAvailable = (row: { capacity: number | null; seatsHeld: number }) => (row.capacity === null ? null : Math.max(0, row.capacity - row.seatsHeld))
 
 export function toPublicProduct(row: ProductRow): PublicProduct {
   return {
@@ -36,6 +38,7 @@ export function toPublicSession(row: SessionRow): PublicSession {
     endsAt: row.endsAt ? row.endsAt.toISOString() : null,
     timezone: row.timezone,
     capacity: row.capacity,
+    seatsAvailable: seatsAvailable(row),
     venue: row.venue,
     product: toPublicProductRef(row.product),
   }
@@ -46,6 +49,7 @@ export function toPublicCohort(row: CohortRow): PublicCohort {
     id: row.id,
     timezone: row.timezone,
     capacity: row.capacity,
+    seatsAvailable: seatsAvailable(row),
     product: toPublicProductRef(row.product),
     sessions: row.sessions.map((session) => ({ sequence: session.cohortSequence as 1 | 2, startsAt: session.startsAt.toISOString(), endsAt: session.endsAt!.toISOString() })),
   }
@@ -58,10 +62,10 @@ export const PRODUCT_SELECT = {
 export const PRODUCT_REF_SELECT = { id: true, slug: true, name: true, type: true, priceAmount: true, currency: true } as const
 
 export const SESSION_SELECT = {
-  id: true, startsAt: true, endsAt: true, timezone: true, capacity: true, venue: true, product: { select: PRODUCT_REF_SELECT },
+  id: true, startsAt: true, endsAt: true, timezone: true, capacity: true, seatsHeld: true, venue: true, product: { select: PRODUCT_REF_SELECT },
 } as const
 
 export const COHORT_SELECT = {
-  id: true, timezone: true, capacity: true, product: { select: PRODUCT_REF_SELECT },
+  id: true, timezone: true, capacity: true, seatsHeld: true, product: { select: PRODUCT_REF_SELECT },
   sessions: { select: { cohortSequence: true, startsAt: true, endsAt: true }, orderBy: { cohortSequence: 'asc' as const } },
 } as const

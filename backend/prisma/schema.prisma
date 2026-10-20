@@ -1,5 +1,5 @@
 // DIY Forests catalog schema (Stage 2): products and their scheduled sessions.
-// Bookings, customers and payments are added in later stages.
+// Accounts (Stage 4A), schedules (Stage 4B) and bookings (Stage 4C) follow below. Payments are not modelled yet.
 //
 // Constraints Prisma cannot express (CHECKs) live in the migration SQL; see
 // prisma/migrations/*_init_catalog/migration.sql and backend/README.md.
@@ -59,6 +59,7 @@ model Product {
 
   sessions Session[]
   cohorts  TrainingCohort[]
+  bookings Booking[]
 
   @@index([type, isActive])
   @@map("products")
@@ -83,12 +84,16 @@ model Session {
   /// Stage 4B: set only for the two sessions of an online-training cohort (with cohortSequence 1 or 2).
   cohortId    String?       @map("cohort_id") @db.Uuid
   cohortSequence Int?       @map("cohort_sequence") @db.SmallInt
+  /// Stage 4C: seats held by active bookings of this standalone session. Changed only by the bookings
+  /// trigger (CHECK 0 <= seats_held <= capacity). Always 0 for cohort sessions: the cohort holds them.
+  seatsHeld   Int           @default(0) @map("seats_held")
   createdAt   DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt   DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   // Restrict: a product that has sessions cannot be deleted; deactivate it instead.
   product Product @relation(fields: [productId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   cohort  TrainingCohort? @relation(fields: [cohortId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  bookings Booking[]
 
   /// One session per product per start instant; also the seed's upsert key.
   @@unique([productId, startsAt])
@@ -109,11 +114,15 @@ model TrainingCohort {
   /// Maximum attendees for the whole two-session training. Null = not set.
   capacity     Int?
   internalNote String?       @map("internal_note")
+  /// Stage 4C: seats held by active bookings (one per booking, covering both sessions). Changed only by
+  /// the bookings trigger (CHECK 0 <= seats_held <= capacity).
+  seatsHeld    Int           @default(0) @map("seats_held")
   createdAt    DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt    DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   product  Product   @relation(fields: [productId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   sessions Session[]
+  bookings Booking[]
 
   @@index([productId, status])
   @@map("training_cohorts")
@@ -168,6 +177,7 @@ model User {
 
   sessions    AuthSession[]
   auditEvents AuditEvent[]
+  bookings    Booking[]
 
   @@unique([identityIssuer, identitySubject])
   @@index([email])
@@ -217,4 +227,60 @@ model AuditEvent {
   @@index([actorUserId])
   @@index([targetType, targetId])
   @@map("audit_events")
+}
+
+// ---------------------------------------------------------------------------
+// Stage 4C: bookings (migration 20261018090000_booking_foundation). Also enforced in that SQL:
+// one-target CHECK, partial unique indexes for active bookings, format CHECKs, and two triggers
+// (target validation and the seats_held counters).
+// ---------------------------------------------------------------------------
+
+enum BookingStatus {
+  PENDING_PAYMENT
+  CANCELLED
+
+  @@map("booking_status")
+}
+
+enum BookingCanceller {
+  CUSTOMER
+  ADMIN
+
+  @@map("booking_canceller")
+}
+
+model Booking {
+  id               String            @id @default(uuid(7)) @db.Uuid
+  reference        String            @unique @db.VarChar(16)
+  userId           String            @map("user_id") @db.Uuid
+  productId        String            @map("product_id") @db.Uuid
+  sessionId        String?           @map("session_id") @db.Uuid
+  cohortId         String?           @map("cohort_id") @db.Uuid
+  status           BookingStatus     @default(PENDING_PAYMENT)
+  priceAmount      Decimal           @map("price_amount") @db.Decimal(12, 2)
+  currency         String            @db.Char(3)
+  productName      String            @map("product_name") @db.VarChar(160)
+  contactName      String            @map("contact_name") @db.VarChar(100)
+  phoneCountry     String            @map("phone_country") @db.Char(2)
+  phoneDialingCode String            @map("phone_dialing_code") @db.VarChar(4)
+  phoneNational    String            @map("phone_national") @db.VarChar(15)
+  phoneE164        String            @map("phone_e164") @db.VarChar(16)
+  idempotencyKey   String            @map("idempotency_key") @db.VarChar(64)
+  cancelledAt      DateTime?         @map("cancelled_at") @db.Timestamptz(3)
+  cancelledBy      BookingCanceller? @map("cancelled_by")
+  cancelReason     String?           @map("cancel_reason") @db.VarChar(500)
+  createdAt        DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user    User            @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  product Product         @relation(fields: [productId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  session Session?        @relation(fields: [sessionId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  cohort  TrainingCohort? @relation(fields: [cohortId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([userId, idempotencyKey])
+  @@index([userId, createdAt])
+  @@index([sessionId, status])
+  @@index([cohortId, status])
+  @@index([status, createdAt])
+  @@map("bookings")
 }

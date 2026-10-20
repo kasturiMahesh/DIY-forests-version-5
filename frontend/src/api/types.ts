@@ -27,6 +27,8 @@ export type PublicSession = {
   /** Organizer's IANA zone (Asia/Kolkata). */
   timezone: string
   capacity: number | null
+  /** Seats still free (capacity minus active bookings), computed by the server; null = no limit. The booking request re-checks it. */
+  seatsAvailable?: number | null
   /** Venue of an in-person session (offline workshop); null/absent for online sessions. */
   venue?: string | null
   product: PublicProductRef
@@ -37,6 +39,7 @@ export type PublicCohort = {
   id: string
   timezone: string
   capacity: number | null
+  seatsAvailable?: number | null
   product: PublicProductRef
   sessions: { sequence: 1 | 2; startsAt: string; endsAt: string }[]
 }
@@ -68,12 +71,12 @@ export type AdminProduct = {
   scheduleCounts?: Record<ScheduleStatus, number>
 }
 export type AdminSession = {
-  id: string; startsAt: string; endsAt: string | null; timezone: string; capacity: number | null; status: ScheduleStatus
+  id: string; startsAt: string; endsAt: string | null; timezone: string; capacity: number | null; seatsHeld: number; status: ScheduleStatus
   venue: string | null; internalNote: string | null; cohortId: string | null; cohortSequence: number | null; product: AdminProductRef
   createdAt: string; updatedAt: string
 }
 export type AdminCohort = {
-  id: string; status: ScheduleStatus; timezone: string; capacity: number | null; internalNote: string | null; product: AdminProductRef
+  id: string; status: ScheduleStatus; timezone: string; capacity: number | null; seatsHeld: number; internalNote: string | null; product: AdminProductRef
   sessions: { id: string; sequence: number; startsAt: string; endsAt: string | null; status: ScheduleStatus }[]
   createdAt: string; updatedAt: string
 }
@@ -83,5 +86,32 @@ export type DashboardSummary = {
   products: { active: number; inactive: number }
   upcoming: Record<ProductType, { published: number; draft: number; next: { id: string; startsAt: string; productName: string; kind: 'session' | 'cohort' }[] }>
   cancelledUpcoming: number
-  capacityTracking: string
+  bookings: { pendingPayment: number; cancelled: number }
 }
+
+// ---- bookings (Stage 4C) ----
+
+/** No payment exists yet: a booking is PENDING_PAYMENT (seat held, not paid) until cancelled. */
+export type BookingStatus = 'PENDING_PAYMENT' | 'CANCELLED'
+export type BookingPhone = { country: string; dialingCode: string; nationalNumber: string; e164: string }
+export type BookingTarget =
+  | { kind: 'session'; id: string; startsAt: string; endsAt: string | null; timezone: string; venue: string | null; status: ScheduleStatus }
+  | { kind: 'cohort'; id: string; timezone: string; status: ScheduleStatus; sessions: { sequence: number; startsAt: string; endsAt: string | null }[] }
+type BookingBase = {
+  id: string
+  /** Human-readable reference, e.g. DF-7K2M9QXA. */
+  reference: string
+  status: BookingStatus
+  /** Snapshot taken when the booking was made (name, price and currency never change afterwards). */
+  product: { id: string; slug: string; type: ProductType; name: string }
+  price: Money
+  target: BookingTarget
+  cancellation: { at: string; by: 'CUSTOMER' | 'ADMIN'; reason: string | null } | null
+  createdAt: string
+  updatedAt: string
+  canCancel: boolean
+}
+export type CustomerBooking = BookingBase & { contact: { name: string; phone: BookingPhone } }
+export type AdminBookingSummary = BookingBase & { customer: { id: string; email: string; displayName: string | null }; contactName: string }
+export type AdminBooking = AdminBookingSummary & { contact: { name: string; phone: BookingPhone } }
+export type BookingRequest = { productId: string; sessionId?: string; cohortId?: string; contactName: string; phone: { country: string; number: string } }

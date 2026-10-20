@@ -37,7 +37,7 @@ export function CohortsPanel({ api }: { api: AdminApi }) {
           <>
             <div className="admin-table-wrap">
               <table className="admin-table">
-                <thead><tr><th scope="col">Session 1 (IST)</th><th scope="col">Session 2 (IST)</th><th scope="col">Product</th><th scope="col">Capacity</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead>
+                <thead><tr><th scope="col">Session 1 (IST)</th><th scope="col">Session 2 (IST)</th><th scope="col">Product</th><th scope="col">Booked / capacity</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead>
                 <tbody>
                   {data.items.map((cohort) => (
                     <tr key={cohort.id}>
@@ -46,7 +46,7 @@ export function CohortsPanel({ api }: { api: AdminApi }) {
                         return <td key={sequence}>{session ? formatIst(session.startsAt) : <em>missing</em>}</td>
                       })}
                       <td>{cohort.product.name}</td>
-                      <td>{cohort.capacity ?? '—'}</td>
+                      <td>{cohort.seatsHeld} / {cohort.capacity ?? 'no limit'}</td>
                       <td><StatusBadge status={cohort.status} /></td>
                       <td className="admin-actions">
                         {cohort.status !== 'CANCELLED' ? <button className="btn btn-quiet btn-small" type="button" onClick={() => setEditing({ mode: 'edit', cohort })}>{cohort.status === 'PUBLISHED' ? 'Edit / reschedule' : 'Edit'}</button> : null}

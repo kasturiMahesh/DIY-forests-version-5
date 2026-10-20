@@ -114,7 +114,7 @@ describe('admin forms', () => {
 
   it('workshop form: venue and end date are required and editable', () => {
     const session: AdminSession = {
-      id: 's1', startsAt: '2026-11-07T04:00:00.000Z', endsAt: '2026-11-11T12:00:00.000Z', timezone: 'Asia/Kolkata', capacity: 12, status: 'PUBLISHED',
+      id: 's1', startsAt: '2026-11-07T04:00:00.000Z', endsAt: '2026-11-11T12:00:00.000Z', timezone: 'Asia/Kolkata', capacity: 12, seatsHeld: 0, status: 'PUBLISHED',
       venue: 'Afforestt Farm, Kashipur', internalNote: null, cohortId: null, cohortSequence: null,
       product: { id: 'p', slug: 'offline-workshop', name: 'Offline Workshop', type: 'OFFLINE_WORKSHOP', isActive: true }, createdAt: '', updatedAt: '',
     }
@@ -130,7 +130,7 @@ describe('admin forms', () => {
 
   it('training form: shows both Fridays (4 hours each, one week apart) for an existing cohort', () => {
     const cohort: AdminCohort = {
-      id: 'c1', status: 'DRAFT', timezone: 'Asia/Kolkata', capacity: 20, internalNote: null,
+      id: 'c1', status: 'DRAFT', timezone: 'Asia/Kolkata', capacity: 20, seatsHeld: 0, internalNote: null,
       product: { id: 'p', slug: 'online-training', name: 'Online Training', type: 'ONLINE_TRAINING', isActive: true },
       sessions: [], createdAt: '', updatedAt: '',
     }

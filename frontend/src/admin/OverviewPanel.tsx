@@ -9,7 +9,7 @@ const TYPES = [
   { key: 'ONLINE_TRAINING', label: 'Online training (2-Friday cohorts)' },
 ] as const
 
-/** Real figures from PostgreSQL only. Booking-based numbers arrive with bookings in Stage 4C. */
+/** Real figures from PostgreSQL only. */
 export function OverviewPanel({ api }: { api: AdminApi }) {
   const [load, retry] = useLoad((signal) => api.dashboard(signal), [api])
   return (
@@ -20,6 +20,10 @@ export function OverviewPanel({ api }: { api: AdminApi }) {
             <div className="admin-tile is-live">
               <h3>Products</h3>
               <p><strong>{data.products.active}</strong> active · {data.products.inactive} inactive</p>
+            </div>
+            <div className="admin-tile is-live">
+              <h3>Bookings</h3>
+              <p><strong>{data.bookings.pendingPayment}</strong> pending payment · {data.bookings.cancelled} cancelled</p>
             </div>
             <div className="admin-tile is-live">
               <h3>Cancelled (upcoming)</h3>
@@ -38,7 +42,7 @@ export function OverviewPanel({ api }: { api: AdminApi }) {
               )
             })}
           </div>
-          <p className="admin-footnote">Seats taken and “nearly full” alerts need bookings, which arrive in a later stage. Capacities set here are limits only.</p>
+          <p className="admin-footnote">Online payment isn’t connected yet: every active booking is pending payment and holds one seat. Seats held are shown next to each capacity.</p>
         </>
       )}
     </LoadState>

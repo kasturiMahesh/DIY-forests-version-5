@@ -2,7 +2,9 @@
 
 Backend for the DIY Forests training platform: a Node.js + TypeScript + Express modular monolith with a versioned REST API under `/api/v1`.
 
-**Stage 4A (current):** the Stage 1 skeleton, the Stage 2 PostgreSQL catalog schema, migrations and development seed, the Stage 3 **read-only catalog API**, and **customer and admin authentication**. Authentication uses OIDC sign-in (Amazon Cognito, or a guarded local dev provider), server-side sessions in PostgreSQL, CSRF protection, rate limits, an operator CLI for admins, and an audit trail. Admin management tools, bookings, payments and email aren't built yet. See "Authentication" below.
+**Stage 4C (current):** the Stage 1 skeleton, the Stage 2 PostgreSQL catalog schema, migrations and development seed, the Stage 3 **read-only catalog API**, Stage 4A **customer and admin authentication**, Stage 4B **admin management**, and Stage 4C **bookings** (customer and admin booking APIs, seat counters, idempotent creation, cancellation). Authentication uses OIDC sign-in (Amazon Cognito, or a guarded local dev provider), server-side sessions in PostgreSQL, CSRF protection, rate limits, an operator CLI for admins, and an audit trail. **Payments and email aren't built:** every booking stays `PENDING_PAYMENT`. See "Authentication" and "Bookings" below.
+
+> **Real PostgreSQL status for bookings: not verified.** The booking migration, constraints, triggers and APIs have been tested against PGlite (in-memory PostgreSQL with a single connection). Behaviour under truly concurrent connections is covered by `tests/db/bookings.postgres-concurrency.test.ts`, which runs only against a real, empty, disposable PostgreSQL database (see "Bookings" below) and has not been run yet.
 
 > **Live Cognito status: not verified.** Authentication has been tested with the local dev provider and against a fake OpenID provider that runs inside the test suite. No real Cognito user pool has been used yet.
 
@@ -139,10 +141,11 @@ Re-running the seed resets these rows to the values above. Don't use it on a dat
 
 | Method and path | Response |
 |---|---|
-| `GET /api/v1/health` | `200 {"status":"ok","service":"diy-forests-api","version","time","uptimeSeconds"}`. No caching, and no dependencies. |
+| `GET /api/v1/health` | **Liveness.** `200 {"status":"ok","service":"diy-forests-api","version","time","uptimeSeconds"}`. No caching, and no dependencies. |
+| `GET /api/v1/ready` | **Readiness.** `200 {"status":"ready","checks":{"database":"ok","shuttingDown":false}}` only when the database answers within 2 s in a UTC session. Otherwise `503` with `"status":"not_ready"` and `database` set to `unavailable` or `not_configured`, or `shuttingDown: true` once SIGTERM/SIGINT has been received. Never includes error details. |
 | `GET /api/v1/products` | Active products. |
 | `GET /api/v1/products/:slug` | One active product. |
-| `GET /api/v1/sessions` | Published, upcoming **standalone** sessions (webinars, workshop batches, including `venue`) of active products, soonest first. Online-training sessions are listed only as cohorts. |
+| `GET /api/v1/sessions` | Published, upcoming **standalone** sessions (webinars, workshop batches, including `venue`) of active products, soonest first. Online-training sessions are listed only as cohorts. Each has `seatsAvailable` (capacity minus active bookings; `null` = no limit). |
 | `GET /api/v1/sessions/:id` | One published standalone session of an active product. |
 | `GET /api/v1/cohorts?product=&from=&limit=` | Published, upcoming online-training cohorts of active products, each with both sessions (`sequence`, `startsAt`, `endsAt`). Fails closed: a cohort is hidden unless **both** of its sessions are published. |
 | `GET /api/v1/cohorts/:id` | One such cohort, or 404 `COHORT_NOT_FOUND`. |
@@ -466,7 +469,7 @@ Request bodies are strict, so unknown fields are a 400. Lists return `{ data, me
 
 | Method and path | Purpose |
 |---|---|
-| `GET /dashboard` | Product counts plus, per schedule type, upcoming published/draft counts and the next dates |
+| `GET /dashboard` | Product counts; per schedule type, upcoming published/draft counts and the next dates; and `bookings: { pendingPayment, cancelled }` |
 | `GET, POST /products` | List (`?type=&active=&page=&pageSize=`) / create. New products start **inactive**. |
 | `GET, PATCH /products/:id` | Read (with schedule counts) / edit texts, slug or price (`{ amount: "149.00", currency: "INR" }`). The type is fixed after creation. |
 | `POST /products/:id/activate`, `/deactivate` | Show on, or hide from, the public catalog |
@@ -492,6 +495,59 @@ Request bodies are strict, so unknown fields are a 400. Lists return `{ data, me
 - Drafts, cancelled items, past dates and anything belonging to an inactive product are never public.
 - Publishing, rescheduling or cancelling shows up on the public catalog within the 15-second cache window.
 
-**Not available until Stage 4C:** bookings, seats taken, customers and attendee lists. Capacity is stored as a limit only; the dashboard says so (`capacityTracking: "not_available_until_bookings_exist"`).
+**Since Stage 4C:** sessions and cohorts show `seatsHeld`. While a session or cohort holds seats it can't be rescheduled (dates, end or venue) or cancelled (409 `HAS_ACTIVE_BOOKINGS`; cancel its bookings first), and its capacity can't go below `seatsHeld` (409 `CAPACITY_BELOW_HELD`). These checks run under a row lock, and the database CHECK `seats_held <= capacity` enforces the capacity rule too. Deactivating a product keeps all of its bookings.
 
 **Migration:** `20261016120000_schedule_management` is additive (new nullable columns, the new table, constraints). Apply it with `npm run db:migrate:deploy` against a development database. It hasn't been applied to any live database by this project.
+
+## Bookings (Stage 4C)
+
+Migration `20261018090000_booking_foundation` adds the `bookings` table, `seats_held` counters on `sessions` and `training_cohorts`, CHECK constraints, partial unique indexes and two triggers:
+- `bookings_check_target` checks that the target matches the product and blocks changes to customer, target, price and reference, and any reinstatement.
+- `bookings_maintain_seats` keeps the counters in step with active bookings.
+
+**Rules**
+- One booking is one seat for one customer on exactly one target. A webinar or offline-workshop booking takes a `sessionId`. An online-training booking takes the `cohortId`, which covers both Friday sessions; booking a single cohort session is refused.
+- The target must be **published**, belong to the chosen **active, non-archived** product, and not have started. Workshops also need their venue and end date. Cohorts must still be two valid 4-hour Fridays exactly 7 days apart.
+- Name, price and currency are **snapshotted** when the booking is made. No tax is added. Later admin changes never alter existing bookings.
+- **No payment exists.** Every booking is `PENDING_PAYMENT` and holds its seat until it is cancelled.
+- Customers can cancel their own pending booking until the dates start. Admins can cancel any pending booking, and must give a reason (3–500 characters).
+- Phone numbers are validated and normalized **on the server** (`src/modules/bookings/phone.ts`). They're stored as country, dialing code, national number and E.164. The project has no phone-number library, so only the countries listed in that file are accepted: IN, US, CA, GB, AU, NZ, AE, SG, DE, FR, NL and AM. Any other country gets `400 PHONE_COUNTRY_UNSUPPORTED` rather than a guessed number.
+
+**Customer API** (under `/api/v1/me`). These routes need a signed-in **customer** session; staff sessions get 403 `CUSTOMER_ACCOUNT_REQUIRED`. Writes need CSRF + Origin, and responses are `no-store`.
+
+| Method and path | Purpose |
+|---|---|
+| `POST /me/bookings` | Body `{ productId, sessionId \| cohortId, contactName, phone: { country, number } }`, plus header `Idempotency-Key` (16–64 of `A-Z a-z 0-9 _ -`). Returns 201 with the booking. A retry with the same key and the same details returns 200, the same booking and `Idempotent-Replayed: true`. The same key with different details is 409 `IDEMPOTENCY_KEY_REUSED`. Extra limit: `AUTH_RATE_LIMIT_MAX` attempts per window per IP. |
+| `GET /me/bookings?status=&page=&pageSize=` | The customer's own bookings, newest first |
+| `GET /me/bookings/:id` | One of the customer's own bookings. Someone else's booking is 404, so its existence is never revealed. |
+| `POST /me/bookings/:id/cancel` | Body `{ reason? }`. Releases the seat. |
+
+Errors: `TARGET_TYPE_MISMATCH`, `TARGET_PRODUCT_MISMATCH`, `PHONE_INVALID`, `PHONE_COUNTRY_UNSUPPORTED`, `IDEMPOTENCY_KEY_REQUIRED` (400); `PRODUCT_NOT_FOUND`, `SESSION_NOT_FOUND`, `COHORT_NOT_FOUND`, `BOOKING_NOT_FOUND` (404); `PRODUCT_UNAVAILABLE`, `TARGET_NOT_BOOKABLE`, `TARGET_STARTED`, `ALREADY_BOOKED`, `SOLD_OUT`, `BOOKING_NOT_CANCELLABLE`, `IDEMPOTENCY_KEY_REUSED` (409); `BOOKINGS_UNAVAILABLE` (503).
+
+**Admin API** (under `/api/v1/admin`, behind the admin guards):
+
+| Method and path | Purpose |
+|---|---|
+| `GET /bookings?status=&productId=&sessionId=&cohortId=&q=&createdFrom=&createdTo=&page=&pageSize=` | List. `q` is an exact reference or part of the customer's email. The list doesn't include phone numbers. |
+| `GET /bookings/:id` | Detail, including the contact phone |
+| `POST /bookings/:id/cancel` | Body `{ reason }` (required). Audited as `BOOKING_CANCELLED`. |
+
+**Audit:** `BOOKING_CREATED` and `BOOKING_CANCELLED` events record the reference, the target and, for cancellations, who cancelled and why. They never record phone numbers.
+
+**Concurrency.** Creating a booking locks the product `FOR SHARE` and the target row `FOR UPDATE`, then re-reads its status and seats. As a result:
+- competing requests for the last seat are serialized;
+- an admin capacity change or cancellation of that target waits for the booking, and vice versa;
+- a same-key request that was waiting is replayed instead of booked twice.
+
+Cancellation is a conditional update (`WHERE status = 'PENDING_PAYMENT'`), so only one of several concurrent cancellations succeeds. Database failures are logged by code and constraint name only, never with row data.
+
+**Testing levels**
+- `tests/bookings/*.test.ts`: unit tests.
+- `tests/db/bookings.integration.test.ts`: HTTP + PGlite. These use real constraints, triggers and transactions over **one** connection, so competing requests are serialized and this is not proof of behaviour under concurrency.
+- `tests/db/bookings.postgres-concurrency.test.ts`: **real PostgreSQL only**. It is skipped unless `TEST_POSTGRES_URL` is set. It refuses any database that isn't empty or whose name doesn't contain `test`, applies all migrations, then races up to 20 connections for the last seat, the same idempotency key, cancellations and capacity reductions:
+
+  ```bash
+  TEST_POSTGRES_URL=postgresql://postgres:postgres@127.0.0.1:5432/diyforests_test npx vitest run tests/db/bookings.postgres-concurrency.test.ts
+  ```
+
+  Never point it at a shared or production database.

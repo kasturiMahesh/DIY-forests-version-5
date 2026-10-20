@@ -15,11 +15,16 @@ const publicUser = (user: AccountUser) => ({ id: user.id, email: user.email, ema
  * Signed-in user's own account. Every route is scoped to the session's user: no route takes a user
  * id from the URL or body, so one customer can never address another customer's data.
  */
-export function accountRouter(deps: AuthDeps): Router {
+export function accountRouter(deps: AuthDeps, bookings?: Router): Router {
   const router = Router()
   const limiter = authRateLimit({ windowMinutes: deps.config.rateLimit.windowMinutes, max: deps.config.rateLimit.max * 3 })
   const session = loadSession(deps)
   router.use('/me', noStore, limiter, (req, res, next) => (deps.repository && deps.providers ? session(req, res, next) : next(unavailable())), requireSession, requireCsrf(deps))
+  if (bookings) {
+    // Booking attempts get their own, tighter budget (per client IP) on top of the /me limit.
+    router.post('/me/bookings', authRateLimit({ windowMinutes: deps.config.rateLimit.windowMinutes, max: deps.config.rateLimit.max }))
+    router.use('/me', bookings)
+  }
 
   router.get('/me/profile', (_req, res) => {
     res.json({ data: publicUser(getAuth(res)!.user) })
@@ -45,7 +50,7 @@ export function accountRouter(deps: AuthDeps): Router {
 }
 
 /** Admin area: authorization probe plus (Stage 4B) the management API, all behind the same guards. */
-export function adminRouter(deps: AuthDeps, management?: Router): Router {
+export function adminRouter(deps: AuthDeps, management: (Router | undefined)[] = []): Router {
   const router = Router()
   const limiter = authRateLimit({ windowMinutes: deps.config.rateLimit.windowMinutes, max: deps.config.rateLimit.max * 10 })
   const session = loadSession(deps)
@@ -55,7 +60,7 @@ export function adminRouter(deps: AuthDeps, management?: Router): Router {
     const { user, session } = getAuth(res)!
     res.json({ data: { user: publicUser(user), session: { kind: session.kind, idleExpiresAt: session.idleExpiresAt.toISOString(), absoluteExpiresAt: session.absoluteExpiresAt.toISOString() } } })
   })
-  if (management) router.use('/admin', management)
+  for (const routes of management) if (routes) router.use('/admin', routes)
 
   return router
 }

@@ -84,6 +84,25 @@ describe('error handler', () => {
     expect(res.body).toEqual(errorShape('INTERNAL_ERROR'))
   })
 
+  it('logs database errors by code and constraint only, never their row data or quoted arguments', async () => {
+    const lines: LoggedLine[] = []
+    const dbError = Object.assign(new Error('\nInvalid `prisma.booking.create()` invocation:\n  phoneE164: "+919876543210", contactName: "Asha Rao"'), {
+      name: 'PrismaClientKnownRequestError', code: 'P2039',
+      meta: { driverAdapterError: { cause: { code: '23514', message: 'violates check constraint "bookings_phone_parts_format"', detail: 'Failing row contains (+919876543210, Asha Rao)' } } },
+    })
+    const wrapped = new HttpError(503, 'BOOKINGS_UNAVAILABLE', 'Bookings are temporarily unavailable.', { cause: dbError })
+    expect((await request(appThrowing(wrapped, lines)).get('/boom')).status).toBe(503)
+    expect((await request(appThrowing(dbError, lines)).get('/boom')).status).toBe(500)
+    const logged = JSON.stringify(lines)
+    expect(logged).not.toMatch(/9876543210|Asha Rao|Failing row/)
+    expect(logged).toContain('P2039 / SQLSTATE 23514 (bookings_phone_parts_format)')
+    // Prisma validation errors (no code) keep only their first line, which never quotes arguments.
+    const validation = Object.assign(new Error('\nInvalid `prisma.user.create()` invocation in\nx.ts:1:1\n  email: "someone@example.test"'), { name: 'PrismaClientValidationError' })
+    await request(appThrowing(validation, lines)).get('/boom')
+    expect(JSON.stringify(lines.at(-1))).toContain('Invalid `prisma.user.create()` invocation in')
+    expect(JSON.stringify(lines.at(-1))).not.toContain('someone@example.test')
+  })
+
   it('passes through HttpError status, code and message without logging', async () => {
     const lines: LoggedLine[] = []
     const res = await request(appThrowing(new HttpError(409, 'SEAT_UNAVAILABLE', 'No seats left'), lines)).get('/boom')

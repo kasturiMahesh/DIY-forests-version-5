@@ -162,7 +162,7 @@ describe('catalog API', () => {
     it('serializes instants as UTC ISO strings and never leaks internal fields', async () => {
       const res = await request(app).get('/api/v1/sessions')
       const first = res.body.data[0]
-      expect(Object.keys(first).sort()).toEqual(['capacity', 'endsAt', 'id', 'product', 'startsAt', 'timezone', 'venue'])
+      expect(Object.keys(first).sort()).toEqual(['capacity', 'endsAt', 'id', 'product', 'seatsAvailable', 'startsAt', 'timezone', 'venue'])
       expect(Object.keys(first.product).sort()).toEqual(['id', 'name', 'price', 'slug', 'type'])
       expect(first).toEqual({
         id: ids.webinarSoon,
@@ -170,11 +170,15 @@ describe('catalog API', () => {
         endsAt: new Date(startsAt.webinarSoon!.getTime() + HOUR).toISOString(),
         timezone: 'Asia/Kolkata',
         capacity: 40,
+        // Stage 4C: capacity minus seats held by active bookings (none here); the raw counter stays internal.
+        seatsAvailable: 40,
         venue: null,
         product: { id: expect.any(String), slug: 'monthly-webinar', name: 'Monthly Webinar', type: 'WEBINAR', price: { amount: '149.00', currency: 'INR' } },
       })
       expect(first.startsAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
       expect(res.body.data[1].capacity).toBeNull()
+      expect(res.body.data[1].seatsAvailable).toBeNull() // no capacity = no limit
+      expect(JSON.stringify(res.body)).not.toContain('seatsHeld')
       expect(JSON.stringify(res.body)).not.toMatch(/secret note|internalNote|status|DRAFT|PUBLISHED/)
     })
 

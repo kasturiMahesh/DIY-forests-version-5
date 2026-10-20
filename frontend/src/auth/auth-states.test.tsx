@@ -71,7 +71,11 @@ describe('account page', () => {
     expect(html).toContain('test.customer.one@example.test')
     expect(html).toContain('name="displayName"')
     expect(html).toContain('Sign out')
-    expect(html).toContain('Bookings made with your account will appear here once online booking is available.')
+    // Stage 4C: bookings are loaded from GET /me/bookings; nothing is rendered before the server answers.
+    expect(html).toContain('Your bookings')
+    expect(html).toContain('Loading your bookings…')
+    expect(html).toContain('pending payment')
+    expect(html).not.toMatch(/DF-[0-9A-Z]{8}|₹|\$\d/)
     expect(html).not.toContain('csrf') // the CSRF token is never rendered
   })
 })
@@ -106,9 +110,9 @@ describe('admin page', () => {
     const html = view(state({ status: 'signed-in', me: admin }), { state: 'ok', data: { user: admin.user, session: admin.session } })
     expect(html).toContain('Admin dashboard')
     expect(html).toContain('Welcome, Test Admin')
-    for (const tab of ['Overview', 'Products', 'Webinars', 'Workshops', 'Online training']) expect(html).toContain(`>${tab}</a>`)
+    for (const tab of ['Overview', 'Products', 'Webinars', 'Workshops', 'Online training', 'Bookings']) expect(html).toContain(`>${tab}</a>`)
     expect(html).toContain('Loading…') // panels fetch from the admin API; nothing is pre-filled
-    expect(html).toContain('Bookings and customer records are not available yet')
+    expect(html).not.toContain('Bookings and customer records are not available yet')
     expect(html).not.toMatch(/\d+ bookings|₹|\$\d/)
   })
 })

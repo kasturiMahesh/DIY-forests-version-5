@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { Router, type Request, type Response } from 'express'
 import { z } from 'zod'
+import { describeForLog } from '../../lib/db-errors.js'
 import type { IdentityPoolName } from '../../config/auth.js'
 import { HttpError } from '../../lib/http-error.js'
 import type { Logger } from '../../lib/logger.js'
@@ -187,7 +188,7 @@ export function authRouter(deps: AuthRouteDeps): Router {
 
 function describe(error: unknown) {
   if (!(error instanceof Error)) return String(error)
-  return { name: error.name, message: error.message, ...(error.cause instanceof Error ? { cause: { name: error.cause.name, message: error.cause.message } } : {}) }
+  return { ...(describeForLog(error) as { name: string; message: string }), ...(error.cause instanceof Error ? { cause: describeForLog(error.cause) } : {}) }
 }
 
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)

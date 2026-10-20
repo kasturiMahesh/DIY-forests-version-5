@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { ApiError, api } from '../api/client'
 import { useAuth } from '../auth/auth-context'
+import { MyBookings } from '../bookings/MyBookings'
 import { SubPageLayout } from './SubPageLayout'
 
 const formatExpiry = (iso: string) => new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(iso))
@@ -95,9 +96,14 @@ export default function AccountPage() {
         </form>
         {notice ? <p className={`auth-message${notice.kind === 'error' ? ' is-error' : ''}`} role={notice.kind === 'error' ? 'alert' : 'status'}>{notice.text}</p> : null}
       </section>
-      <section className="auth-card">
-        <h2>Your bookings</h2>
-        <p>Bookings made with your account will appear here once online booking is available.</p>
+      <section className="auth-card" aria-labelledby="bookings-heading">
+        <h2 id="bookings-heading">Your bookings</h2>
+        {user.role === 'CUSTOMER' && session.kind === 'CUSTOMER' ? (
+          <>
+            <p>Online payment isn’t available yet, so new bookings stay <strong>pending payment</strong>: your seat is held, and nothing has been charged.</p>
+            <MyBookings csrfToken={csrfToken} />
+          </>
+        ) : <p>Staff accounts don’t make bookings. Customer bookings are in the admin area.</p>}
       </section>
     </SubPageLayout>
   )

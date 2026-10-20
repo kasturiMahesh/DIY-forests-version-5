@@ -28,6 +28,8 @@ export type PublicSession = {
   /** Organizer's IANA zone (for showing organizer-local time); clients display in the visitor's zone. */
   timezone: string
   capacity: number | null
+  /** capacity minus seats held by active (pending-payment) bookings; null = no limit. Checked again when booking. */
+  seatsAvailable: number | null
   /** Where an in-person session (offline workshop) takes place; null for online sessions. */
   venue: string | null
   product: PublicProductRef
@@ -38,6 +40,8 @@ export type PublicCohort = {
   id: string
   timezone: string
   capacity: number | null
+  /** capacity minus seats held by active (pending-payment) bookings; null = no limit. Checked again when booking. */
+  seatsAvailable: number | null
   product: PublicProductRef
   sessions: { sequence: 1 | 2; startsAt: string; endsAt: string }[]
 }

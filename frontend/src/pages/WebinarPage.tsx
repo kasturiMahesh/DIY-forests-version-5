@@ -13,6 +13,7 @@ const unavailableButton = { opacity: 0.75, cursor: 'not-allowed' } as const
 /** Reserve link while a published session exists; otherwise a retry or a non-interactive placeholder. */
 function ReserveAction({ catalog, label }: { catalog: CatalogState; label: string }) {
   if (catalog.status === 'error') return <button className="btn" type="button" onClick={catalog.retry}>Try again</button>
+  if (catalog.status === 'ready' && catalog.nextWebinar?.seatsAvailable === 0) return <span className="btn" aria-disabled="true" style={unavailableButton}>Fully booked</span>
   if (catalog.status === 'ready' && catalog.nextWebinar) return <a className="btn" data-reserve-webinar href={RESERVE_URL}>{label}</a>
   return <span className="btn" aria-disabled="true" style={unavailableButton}>{catalog.status === 'loading' ? label : 'Dates coming soon'}</span>
 }

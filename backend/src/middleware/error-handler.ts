@@ -1,4 +1,5 @@
 import type { ErrorRequestHandler } from 'express'
+import { describeForLog, isPrismaError } from '../lib/db-errors.js'
 import { HttpError, type ErrorBody } from '../lib/http-error.js'
 import type { Logger } from '../lib/logger.js'
 
@@ -30,7 +31,8 @@ export function errorHandler(logger: Logger): ErrorRequestHandler {
     const message = known?.message ?? 'An unexpected error occurred'
 
     if (status >= 500) {
-      const describe = (value: unknown) => (value instanceof Error ? { name: value.name, message: value.message, stack: value.stack } : String(value))
+      // Prisma errors are logged by code and constraint only: their messages can quote customer data.
+      const describe = (value: unknown) => (value instanceof Error && !isPrismaError(value) ? { name: value.name, message: value.message, stack: value.stack } : describeForLog(value))
       logger.error('Unhandled error', {
         requestId,
         method: req.method,
