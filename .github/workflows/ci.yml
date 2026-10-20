@@ -1,0 +1,127 @@
+# Continuous integration for the DIY Forests backend and frontend.
+# Runs the projects' own scripts only. Uses no repository secrets, no external or production
+# database, and deploys nothing.
+name: CI
+
+on:
+  push:
+    branches: [main, stage-1-backend]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (validate, lint, typecheck, test, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - run: npm run db:validate
+      - run: npm run lint
+      - run: npm run typecheck # pretypecheck runs prisma generate (git-ignored output)
+      # PGlite-backed suites. TEST_POSTGRES_URL is deliberately unset here, so the real-PostgreSQL
+      # suite skips in this job; it runs (and must pass) in the backend-postgres job below.
+      - run: npm test
+      - run: npm run build
+      - name: CI did not modify tracked files
+        run: |
+          git diff --exit-code
+          test -z "$(git status --porcelain)" || { git status --porcelain; exit 1; }
+
+  backend-postgres:
+    name: Backend real-PostgreSQL concurrency suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: diyforests_test
+          # Throwaway credential for an ephemeral database that exists only inside this job's
+          # runner. Not a secret and not used anywhere else.
+          POSTGRES_PASSWORD: ci-throwaway-not-a-secret
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres -d diyforests_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - run: npm run db:generate
+      # The suite itself refuses to run unless the database name contains "test" and the public
+      # schema is empty, then applies all migrations with `prisma migrate deploy`.
+      - name: Run real-PostgreSQL concurrency suite
+        env:
+          TEST_POSTGRES_URL: postgresql://postgres:ci-throwaway-not-a-secret@127.0.0.1:5432/diyforests_test?sslmode=disable
+        run: >-
+          npx vitest run tests/db/bookings.postgres-concurrency.test.ts
+          --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/pg-results.json"
+      # Vitest reports a fully skipped run as success, so check the JSON report explicitly.
+      - name: Fail if the suite skipped tests, ran none, or had failures
+        run: |
+          node - "$RUNNER_TEMP/pg-results.json" <<'EOF'
+          const report = require(process.argv[2])
+          const statuses = report.testResults.flatMap((file) => file.assertionResults.map((test) => test.status))
+          const ok = report.numTotalTests > 0
+            && report.numPassedTests === report.numTotalTests
+            && report.numFailedTests === 0 && report.numPendingTests === 0 && report.numTodoTests === 0
+            && statuses.length === report.numTotalTests && statuses.every((status) => status === 'passed')
+          console.log(`real-PostgreSQL suite: total=${report.numTotalTests} passed=${report.numPassedTests} failed=${report.numFailedTests} skipped=${report.numPendingTests} todo=${report.numTodoTests}`)
+          if (!ok) { console.error('The real-PostgreSQL suite did not fully run and pass.'); process.exit(1) }
+          EOF
+      - name: CI did not modify tracked files
+        run: |
+          git diff --exit-code
+          test -z "$(git status --porcelain)" || { git status --porcelain; exit 1; }
+
+  frontend:
+    name: Frontend (lint, typecheck, test, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npx tsc -p tsconfig.app.json --noEmit
+      - run: npx tsc -p tsconfig.node.json --noEmit
+      - run: npm test
+      - run: npm run build
+      - name: CI did not modify tracked files
+        run: |
+          git diff --exit-code
+          test -z "$(git status --porcelain)" || { git status --porcelain; exit 1; }
