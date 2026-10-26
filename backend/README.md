@@ -190,6 +190,7 @@ Successful responses use one envelope: `{ "data": … }` for single items, and `
 | `product` | Product slug | — |
 | `from` | ISO 8601 instant **with `Z` or an offset**. Sessions starting at or after it are returned. | The server's current time |
 | `limit` | 1–100 | 50 |
+| `bookable` | `true`: only dates that can still be booked, i.e. starting **more than 24 hours** after the server's current time (bookings close 24 hours before the start, the same rule the booking API enforces). Also accepted by `GET /cohorts`, where the cohort's first session counts. The website uses `bookable=true`. | `false` (the plain listing above) |
 
 ```json
 {

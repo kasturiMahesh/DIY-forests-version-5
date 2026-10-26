@@ -5,6 +5,21 @@ import { CatalogContext, type CatalogState } from './catalog-context'
 const EMPTY = { products: [], nextWebinar: null, workshopBatches: [], trainingCohorts: [] }
 const EMPTY_LOADING_STATE = { status: 'loading' as const, ...EMPTY }
 
+/**
+ * Loads the public catalog. `bookable: true` asks the server only for dates that can still be booked
+ * (bookings close 24 hours before the start), so the banner shows the next bookable webinar and no
+ * unbookable date is offered. No bookable webinar gives `nextWebinar: null` (the banner's empty state).
+ */
+export async function loadCatalog(client: ApiClient, signal: AbortSignal): Promise<Omit<CatalogState, 'retry'>> {
+  const [products, webinars, workshops, cohorts] = await Promise.all([
+    client.listProducts({ signal }),
+    client.listSessions({ type: 'WEBINAR', limit: 1, bookable: true }, signal),
+    client.listSessions({ type: 'OFFLINE_WORKSHOP', limit: 6, bookable: true }, signal),
+    client.listCohorts({ product: 'online-training', limit: 6, bookable: true }, signal),
+  ])
+  return { status: 'ready', products, nextWebinar: webinars.sessions[0] ?? null, workshopBatches: workshops.sessions, trainingCohorts: cohorts }
+}
+
 /** Loads the public catalog once for the whole app; `retry` reloads after an error. */
 export function CatalogProvider({ children, client = defaultApi }: { children: ReactNode; client?: ApiClient }) {
   const [attempt, setAttempt] = useState(0)
@@ -12,13 +27,8 @@ export function CatalogProvider({ children, client = defaultApi }: { children: R
 
   useEffect(() => {
     const controller = new AbortController()
-    Promise.all([
-      client.listProducts({ signal: controller.signal }),
-      client.listSessions({ type: 'WEBINAR', limit: 1 }, controller.signal),
-      client.listSessions({ type: 'OFFLINE_WORKSHOP', limit: 6 }, controller.signal),
-      client.listCohorts({ product: 'online-training', limit: 6 }, controller.signal),
-    ]).then(
-      ([products, webinars, workshops, cohorts]) => setState({ status: 'ready', products, nextWebinar: webinars.sessions[0] ?? null, workshopBatches: workshops.sessions, trainingCohorts: cohorts }),
+    loadCatalog(client, controller.signal).then(
+      (loaded) => setState(loaded),
       (error: unknown) => {
         if (controller.signal.aborted) return
         console.warn('Catalog could not be loaded; showing fallback content.', error)

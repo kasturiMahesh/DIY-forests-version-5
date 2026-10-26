@@ -46,7 +46,8 @@ export type PublicCohort = {
 
 export type SessionListMeta = { from: string; limit: number; count: number }
 
-export type SessionQuery = { type?: ProductType; product?: string; from?: string; limit?: number }
+/** `bookable: true` asks the server for dates that can still be booked (bookings close 24 hours before the start). */
+export type SessionQuery = { type?: ProductType; product?: string; from?: string; limit?: number; bookable?: boolean }
 
 // ---- authentication (Stage 4A) ----
 

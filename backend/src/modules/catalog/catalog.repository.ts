@@ -4,8 +4,13 @@ import { assertUtcSession } from '../../db/timezone-guard.js'
 import { COHORT_SELECT, PRODUCT_SELECT, SESSION_SELECT, toPublicCohort, toPublicProduct, toPublicSession } from './catalog.serializers.js'
 import type { ProductType, PublicCohort, PublicProduct, PublicSession } from './catalog.types.js'
 
-export type SessionQuery = { from: Date; limit: number; productSlug?: string; type?: ProductType }
-export type CohortQuery = { from: Date; limit: number; productSlug?: string }
+/**
+ * `bookableAfter` (optional): only sessions / cohorts whose start is strictly after this instant, i.e.
+ * still open for booking. Callers pass now + the booking cutoff (24 hours), the same rule the booking
+ * API enforces (bookings close at start - 24 hours). Omitted: the plain upcoming listing, as before.
+ */
+export type SessionQuery = { from: Date; limit: number; productSlug?: string; type?: ProductType; bookableAfter?: Date }
+export type CohortQuery = { from: Date; limit: number; productSlug?: string; bookableAfter?: Date }
 
 /** Read-only, public view of the catalog. Only active products and PUBLISHED sessions are visible. */
 export interface CatalogRepository {
@@ -71,12 +76,12 @@ export function createCatalogRepository(prisma: PrismaClient, { beforeAvailabili
       return row ? toPublicProduct(row) : null
     },
 
-    async listUpcomingSessions({ from, limit, productSlug, type }) {
+    async listUpcomingSessions({ from, limit, productSlug, type, bookableAfter }) {
       await availability()
       const rows = await prisma.session.findMany({
         where: {
           ...publicSession,
-          startsAt: { gte: from },
+          startsAt: { gte: from, ...(bookableAfter ? { gt: bookableAfter } : {}) },
           product: { isActive: true, archivedAt: null, ...(productSlug ? { slug: productSlug } : {}), ...(type ? { type } : {}) },
         },
         select: SESSION_SELECT,
@@ -92,10 +97,11 @@ export function createCatalogRepository(prisma: PrismaClient, { beforeAvailabili
       return row ? toPublicSession(row) : null
     },
 
-    async listUpcomingCohorts({ from, limit, productSlug }) {
+    async listUpcomingCohorts({ from, limit, productSlug, bookableAfter }) {
       await availability()
       const firsts = await prisma.session.findMany({
-        where: { cohortSequence: 1, startsAt: { gte: from }, cohort: { ...publicCohort, ...(productSlug ? { product: { isActive: true, archivedAt: null, slug: productSlug } } : {}) } },
+        // A cohort is booked as one unit and closes 24 hours before its FIRST session.
+        where: { cohortSequence: 1, startsAt: { gte: from, ...(bookableAfter ? { gt: bookableAfter } : {}) }, cohort: { ...publicCohort, ...(productSlug ? { product: { isActive: true, archivedAt: null, slug: productSlug } } : {}) } },
         select: { cohortId: true },
         orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
         take: limit,

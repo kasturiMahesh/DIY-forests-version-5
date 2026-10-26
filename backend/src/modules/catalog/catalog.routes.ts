@@ -1,11 +1,18 @@
 import { Router, type Response } from 'express'
 import { z } from 'zod'
 import { HttpError } from '../../lib/http-error.js'
+import { BOOKING_CUTOFF_MS } from '../bookings/booking-holds.js'
 import type { CatalogRepository } from './catalog.repository.js'
 import type { CohortListMeta, ItemResponse, ListResponse, PublicCohort, PublicProduct, PublicSession, SessionListMeta } from './catalog.types.js'
 
 const SLUG = z.string().regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'must be a lower-case slug like "online-training"').max(80)
 const PRODUCT_TYPE = z.enum(['ONLINE_TRAINING', 'OFFLINE_WORKSHOP', 'WEBINAR'])
+/**
+ * bookable=true: only dates that can still be booked, i.e. starting strictly more than 24 hours after
+ * the server's current time (the booking API refuses bookings from start - 24 hours). Opt-in, so the
+ * existing listing (including past sessions with an earlier `from`) is unchanged for other callers.
+ */
+const BOOKABLE = z.enum(['true', 'false'], { message: 'must be "true" or "false"' }).optional()
 export const DEFAULT_SESSION_LIMIT = 50
 export const MAX_SESSION_LIMIT = 100
 
@@ -17,12 +24,16 @@ const sessionListQuery = z.object({
   // An instant, so it must carry "Z" or an offset; a bare local time would depend on someone's zone.
   from: z.iso.datetime({ offset: true, message: 'must be an ISO 8601 instant with Z or an offset, e.g. 2026-11-01T00:00:00Z' }).optional(),
   limit: z.coerce.number().int().min(1).max(MAX_SESSION_LIMIT).default(DEFAULT_SESSION_LIMIT),
+  bookable: BOOKABLE,
 }).strict()
 const cohortListQuery = z.object({
   product: SLUG.optional(),
   from: z.iso.datetime({ offset: true, message: 'must be an ISO 8601 instant with Z or an offset, e.g. 2026-11-01T00:00:00Z' }).optional(),
   limit: z.coerce.number().int().min(1).max(MAX_SESSION_LIMIT).default(DEFAULT_SESSION_LIMIT),
+  bookable: BOOKABLE,
 }).strict()
+/** The earliest start a bookable date may have (exclusive): now + the booking cutoff. */
+const bookableAfter = (bookable: 'true' | 'false' | undefined, now: Date) => (bookable === 'true' ? { bookableAfter: new Date(now.getTime() + BOOKING_CUTOFF_MS) } : {})
 const slugParams = z.object({ slug: SLUG })
 const idParams = z.object({ id: z.uuid({ message: 'must be a UUID' }) })
 
@@ -59,7 +70,7 @@ const cache = (res: Response) => res.set('Cache-Control', `public, max-age=${CAT
  * Read-only public catalog. `repository` is null when no database is configured; every
  * endpoint then answers 503 instead of failing at startup, so the rest of the API still runs.
  */
-export function catalogRouter(repository: CatalogRepository | null): Router {
+export function catalogRouter(repository: CatalogRepository | null, now: () => Date = () => new Date()): Router {
   const router = Router()
   const repo = () => {
     if (!repository) throw unavailable()
@@ -82,11 +93,12 @@ export function catalogRouter(repository: CatalogRepository | null): Router {
   })
 
   router.get('/sessions', async (req, res) => {
-    const { from, limit, product, type } = parse(sessionListQuery, req.query, 'query')
+    const { from, limit, product, type, bookable } = parse(sessionListQuery, req.query, 'query')
     // Default window starts at the real current instant on the server, never a visitor's wall clock.
-    const fromInstant = from ? new Date(from) : new Date()
+    const at = now()
+    const fromInstant = from ? new Date(from) : at
     const data = await load(() =>
-      repo().listUpcomingSessions({ from: fromInstant, limit, ...(product ? { productSlug: product } : {}), ...(type ? { type } : {}) }),
+      repo().listUpcomingSessions({ from: fromInstant, limit, ...(product ? { productSlug: product } : {}), ...(type ? { type } : {}), ...bookableAfter(bookable, at) }),
     )
     const body: ListResponse<PublicSession, SessionListMeta> = { data, meta: { from: fromInstant.toISOString(), limit, count: data.length } }
     cache(res).json(body)
@@ -102,9 +114,10 @@ export function catalogRouter(repository: CatalogRepository | null): Router {
 
   // Online training: two linked Friday sessions offered (and, in Stage 4C, booked) as one cohort.
   router.get('/cohorts', async (req, res) => {
-    const { from, limit, product } = parse(cohortListQuery, req.query, 'query')
-    const fromInstant = from ? new Date(from) : new Date()
-    const data = await load(() => repo().listUpcomingCohorts({ from: fromInstant, limit, ...(product ? { productSlug: product } : {}) }))
+    const { from, limit, product, bookable } = parse(cohortListQuery, req.query, 'query')
+    const at = now()
+    const fromInstant = from ? new Date(from) : at
+    const data = await load(() => repo().listUpcomingCohorts({ from: fromInstant, limit, ...(product ? { productSlug: product } : {}), ...bookableAfter(bookable, at) }))
     const body: ListResponse<PublicCohort, CohortListMeta> = { data, meta: { from: fromInstant.toISOString(), limit, count: data.length } }
     cache(res).json(body)
   })

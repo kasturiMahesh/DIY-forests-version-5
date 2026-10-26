@@ -194,7 +194,7 @@ export function createApiClient({ baseUrl = '', fetch: fetchImpl = globalThis.fe
     },
 
     /** Published upcoming online-training cohorts (two linked Fridays each). */
-    async listCohorts(query: { product?: string; limit?: number } = {}, signal?: AbortSignal): Promise<PublicCohort[]> {
+    async listCohorts(query: { product?: string; limit?: number; bookable?: boolean } = {}, signal?: AbortSignal): Promise<PublicCohort[]> {
       const params = new URLSearchParams()
       for (const [key, value] of Object.entries(query)) if (value !== undefined) params.set(key, String(value))
       return expectList(await getJson(`/cohorts${params.size ? `?${params}` : ''}`, signal), isPublicCohort)
