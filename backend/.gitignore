@@ -1,0 +1,11 @@
+node_modules
+dist
+# Prisma Client is generated from prisma/schema.prisma (npm run db:generate; also runs before build/typecheck/test).
+src/generated
+coverage
+*.log
+
+# Local configuration. Never commit real environment files.
+.env
+.env.*
+!.env.example

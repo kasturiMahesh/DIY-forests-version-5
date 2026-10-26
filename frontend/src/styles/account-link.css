@@ -1,0 +1,6 @@
+/* Stage 4A addition to the home page header (home.css stays the original, verbatim).
+   On narrow screens the Sign in / Account pill shows only its icon, so the header keeps one row. */
+@media (max-width:480px){
+  .account-link{width:44px!important; padding:0!important;}
+  .account-link .account-link-label{position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap;}
+}
