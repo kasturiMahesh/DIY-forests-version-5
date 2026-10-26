@@ -3,7 +3,7 @@ import { formatPrice } from '../api/format'
 import type { AdminProduct, ProductType } from '../api/types'
 import type { AdminApi, ProductForm } from './admin-api'
 import { useAction, useLoad } from './admin-hooks'
-import { TYPE_LABEL, validateProductDraft, type ProductDraft } from './admin-rules'
+import { CANONICAL_PRODUCT_SLUGS, TYPE_LABEL, validateProductDraft, type ProductDraft } from './admin-rules'
 import { ConfirmAction, LoadState, Notice, Pager, StatusBadge } from './ui'
 
 const emptyDraft: ProductDraft = { slug: '', name: '', type: 'WEBINAR', summary: '', description: '', audience: '', durationLabel: '', amount: '', currency: 'INR' }
@@ -88,6 +88,7 @@ export function ProductsPanel({ api }: { api: AdminApi }) {
 
 export function ProductEditor({ api, initial, productId, onDone, onCancel }: { api: AdminApi; initial: ProductDraft; productId: string | null; onDone: (message: string) => void; onCancel: () => void }) {
   const [draft, setDraft] = useState<ProductDraft>(initial)
+  const slugLocked = productId !== null && CANONICAL_PRODUCT_SLUGS.includes(initial.slug)
   const action = useAction()
   const set = (key: keyof ProductDraft) => (event: { target: { value: string } }) => setDraft({ ...draft, [key]: event.target.value })
 
@@ -108,7 +109,9 @@ export function ProductEditor({ api, initial, productId, onDone, onCancel }: { a
       <h3>{productId ? `Edit ${initial.name}` : 'New product'}</h3>
       <div className="admin-form-grid">
         <label>Name<input value={draft.name} onChange={set('name')} required maxLength={160} /></label>
-        <label>Slug (web address)<input value={draft.slug} onChange={set('slug')} required maxLength={80} pattern="[a-z0-9]+(-[a-z0-9]+)*" /></label>
+        <label>Slug (web address)<input value={draft.slug} onChange={set('slug')} required maxLength={80} pattern="[a-z0-9]+(-[a-z0-9]+)*" disabled={slugLocked} aria-describedby={slugLocked ? 'slugLockedNote' : undefined} />
+          {slugLocked ? <small id="slugLockedNote">Fixed: the website uses this address to find the offering and its dates.</small> : null}
+        </label>
         <label>Type
           {productId ? <input value={TYPE_LABEL[draft.type]} disabled /> : (
             <select value={draft.type} onChange={set('type')}>{Object.entries(TYPE_LABEL).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>

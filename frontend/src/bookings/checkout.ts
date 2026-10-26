@@ -15,6 +15,26 @@ export type CheckoutOutcome =
   | { kind: 'done'; results: CheckoutResult[]; rotateKeys: string[] }
 
 const FIELD_ERRORS = new Set(['PHONE_INVALID', 'PHONE_COUNTRY_UNSUPPORTED', 'INVALID_REQUEST'])
+
+/** The server's contact-name rule (booking.schemas.ts): letters and marks first, then letters, marks, spaces and . ' ’ - */
+const CONTACT_NAME = /^[\p{L}\p{M}][\p{L}\p{M}\s.'’-]*$/u
+
+/**
+ * A suggested "Full name" for checkout, from the account's display name. Parenthesised notes such as
+ * "(DEV)" and characters the server would reject are dropped; if nothing valid is left the field starts
+ * empty. Only a suggestion: the customer can edit it, and the server still validates what is sent.
+ */
+export function suggestedContactName(displayName: string | null | undefined): string {
+  const cleaned = (displayName ?? '')
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/[^\p{L}\p{M}\s.'’-]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^[^\p{L}\p{M}]+/u, '')
+    .slice(0, 100)
+    .trim()
+  return CONTACT_NAME.test(cleaned) ? cleaned : ''
+}
 export const UNCONFIRMED_MESSAGE = 'We couldn’t confirm this booking. Please try again; it won’t be booked twice.'
 
 /**

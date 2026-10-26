@@ -86,13 +86,45 @@ export type DashboardSummary = {
   products: { active: number; inactive: number }
   upcoming: Record<ProductType, { published: number; draft: number; next: { id: string; startsAt: string; productName: string; kind: 'session' | 'cohort' }[] }>
   cancelledUpcoming: number
-  bookings: { pendingPayment: number; cancelled: number }
+  /** confirmedSimulated: confirmed through the development payment simulator — NOT revenue, no money received. */
+  bookings: {
+    pendingPayment: number; cancelled: number; confirmedSimulated?: number; confirmedPaid?: number; expired?: number
+    awaitingConfirmation?: number
+    /** Confirmed by an administrator: not proof of payment, never revenue. */
+    confirmedManual?: { total: number; PAYMENT_ARRANGED_OFFLINE: number; COMPLIMENTARY: number; OTHER: number }
+    cancellationRequests?: { pending: number; approved: number; rejected: number }
+  }
 }
 
 // ---- bookings (Stage 4C) ----
 
-/** No payment exists yet: a booking is PENDING_PAYMENT (seat held, not paid) until cancelled. */
-export type BookingStatus = 'PENDING_PAYMENT' | 'CANCELLED'
+/**
+ * PENDING_PAYMENT: seat held, not paid (new bookings for 30 minutes, then released automatically).
+ * CONFIRMED: a payment attempt succeeded — in this stage always the development simulator, so never real money.
+ */
+export type BookingStatus = 'PENDING_PAYMENT' | 'AWAITING_CONFIRMATION' | 'CONFIRMED' | 'CANCELLED'
+export type ManualConfirmationReason = 'PAYMENT_ARRANGED_OFFLINE' | 'COMPLIMENTARY' | 'OTHER'
+/** What the website did about money when an approved request cancelled a confirmed booking. Never "refunded". */
+export type RefundOutcome = 'NO_REFUND_SIMULATED_PAYMENT' | 'NO_REFUND_COMPLIMENTARY' | 'NOT_PROCESSED_BY_WEBSITE'
+/** A customer's request to cancel a confirmed booking. The percentage is eligibility only, fixed when requested. */
+export type CancellationRequest = {
+  id: string; status: 'PENDING' | 'APPROVED' | 'REJECTED'; requestedAt: string; refundPolicy: 'TRAINING_V1' | 'WEBINAR_V1'; refundPercent: number
+  customerReason: string | null; decidedAt: string | null; decisionReason: string | null; refundOutcome: RefundOutcome | null
+}
+export type PaymentAttemptStatus = 'CREATED' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED'
+/** A (simulated) payment attempt. There are never card or bank details: none are collected. */
+export type PaymentAttempt = {
+  id: string; status: PaymentAttemptStatus; provider: 'DEV_SIMULATOR'; simulated: boolean; amount: Money
+  failureReason: string | null; completedAt: string | null; createdAt: string
+}
+export type BookingPayment = {
+  /** When an unpaid booking is released. null = an older booking without a payment deadline. */
+  dueAt: string | null
+  openAttemptId: string | null
+  attempts: PaymentAttempt[]
+}
+/** GET /payments/config: simulator controls are shown only when the server reports it enabled (development). */
+export type PaymentConfig = { simulator: { enabled: boolean; environment?: string; notice?: string }; realPayments: boolean }
 export type BookingPhone = { country: string; dialingCode: string; nationalNumber: string; e164: string }
 export type BookingTarget =
   | { kind: 'session'; id: string; startsAt: string; endsAt: string | null; timezone: string; venue: string | null; status: ScheduleStatus }
@@ -106,12 +138,25 @@ type BookingBase = {
   product: { id: string; slug: string; type: ProductType; name: string }
   price: Money
   target: BookingTarget
-  cancellation: { at: string; by: 'CUSTOMER' | 'ADMIN'; reason: string | null } | null
+  cancellation: { at: string; by: 'CUSTOMER' | 'ADMIN' | 'SYSTEM'; reason: string | null } | null
+  /** Absent only from an older API. */
+  payment?: BookingPayment
+  /** Manual mode: when an unconfirmed request is released. */
+  confirmationDueAt?: string | null
+  /** Set once confirmed (kept after an approved cancellation); `notice` is the mandatory wording for the method. */
+  confirmation?: { at: string; method?: 'MANUAL' | 'PAYMENT'; simulated: boolean; notice: string | null } | null
+  /** The most recent cancellation request, if any. */
+  cancellationRequest?: CancellationRequest | null
   createdAt: string
   updatedAt: string
   canCancel: boolean
 }
-export type CustomerBooking = BookingBase & { contact: { name: string; phone: BookingPhone } }
-export type AdminBookingSummary = BookingBase & { customer: { id: string; email: string; displayName: string | null }; contactName: string }
+export type CustomerBooking = BookingBase & { contact: { name: string; phone: BookingPhone }; canPay?: boolean; canRequestCancellation?: boolean }
+export type AdminBookingSummary = BookingBase & {
+  customer: { id: string; email: string; displayName: string | null }; contactName: string
+  canConfirm?: boolean
+  manualConfirmation?: { reason: ManualConfirmationReason; note: string | null; by: { id: string; email: string; displayName: string | null } | null } | null
+  cancellationRequests?: CancellationRequest[]
+}
 export type AdminBooking = AdminBookingSummary & { contact: { name: string; phone: BookingPhone } }
 export type BookingRequest = { productId: string; sessionId?: string; cohortId?: string; contactName: string; phone: { country: string; number: string } }

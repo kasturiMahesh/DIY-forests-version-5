@@ -18,7 +18,15 @@ export interface CatalogRepository {
   findCohort(id: string): Promise<PublicCohort | null>
 }
 
-export function createCatalogRepository(prisma: PrismaClient): CatalogRepository {
+export type CatalogRepositoryOptions = {
+  /**
+   * Stage 2: runs before every availability read (sessions and cohorts carry seatsAvailable), so
+   * expired unpaid holds are released before seats are counted. Throttled by the caller; must not throw.
+   */
+  beforeAvailabilityRead?: () => Promise<void>
+}
+
+export function createCatalogRepository(prisma: PrismaClient, { beforeAvailabilityRead = async () => {} }: CatalogRepositoryOptions = {}): CatalogRepository {
   // Prisma 7.10's pg adapter only handles timestamptz correctly in a UTC session (see
   // src/db/timezone-guard.ts), so confirm that once before the first query. A failed check is
   // not cached, so the next request re-checks (e.g. after the database is fixed).
@@ -41,6 +49,11 @@ export function createCatalogRepository(prisma: PrismaClient): CatalogRepository
     sessions: { none: { status: { not: SessionStatus.PUBLISHED } } },
   } as const
 
+  const availability = async () => {
+    await ready()
+    await beforeAvailabilityRead()
+  }
+
   return {
     async listProducts({ type }) {
       await ready()
@@ -59,7 +72,7 @@ export function createCatalogRepository(prisma: PrismaClient): CatalogRepository
     },
 
     async listUpcomingSessions({ from, limit, productSlug, type }) {
-      await ready()
+      await availability()
       const rows = await prisma.session.findMany({
         where: {
           ...publicSession,
@@ -74,13 +87,13 @@ export function createCatalogRepository(prisma: PrismaClient): CatalogRepository
     },
 
     async findSession(id) {
-      await ready()
+      await availability()
       const row = await prisma.session.findFirst({ where: { id, ...publicSession }, select: SESSION_SELECT })
       return row ? toPublicSession(row) : null
     },
 
     async listUpcomingCohorts({ from, limit, productSlug }) {
-      await ready()
+      await availability()
       const firsts = await prisma.session.findMany({
         where: { cohortSequence: 1, startsAt: { gte: from }, cohort: { ...publicCohort, ...(productSlug ? { product: { isActive: true, archivedAt: null, slug: productSlug } } : {}) } },
         select: { cohortId: true },
@@ -95,7 +108,7 @@ export function createCatalogRepository(prisma: PrismaClient): CatalogRepository
     },
 
     async findCohort(id) {
-      await ready()
+      await availability()
       const row = await prisma.trainingCohort.findFirst({ where: { id, ...publicCohort }, select: COHORT_SELECT })
       return row && row.sessions.length === 2 ? toPublicCohort(row) : null
     },

@@ -72,3 +72,6 @@
 .booking-status{font-weight:700; color:var(--forest-ink);}
 .booking-status.is-cancelled{color:var(--ink-soft);}
 .booking-confirm{display:inline-flex; flex-wrap:wrap; gap:6px; align-items:center;}
+/* Stage 2 development payment simulator (never present in production builds). */
+.payment-simulator{flex-basis:100%; border:2px dashed var(--line); border-radius:10px; padding:10px 12px; display:flex; flex-direction:column; gap:8px; align-items:flex-start;}
+.payment-simulator p{margin:0; font-size:.86rem;}

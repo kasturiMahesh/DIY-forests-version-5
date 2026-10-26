@@ -31,12 +31,14 @@ export const customerCancelBody = z.object({ reason: z.string().trim().max(500).
 export const adminCancelBody = z.object({ reason: z.string().trim().min(3, 'must explain the cancellation (at least 3 characters)').max(500) }).strict()
 
 const page = { page: z.coerce.number().int().min(1).max(10_000).default(1), pageSize: z.coerce.number().int().min(1).max(100).default(20) }
-const STATUS = z.enum(['PENDING_PAYMENT', 'CANCELLED'])
+const STATUS = z.enum(['PENDING_PAYMENT', 'AWAITING_CONFIRMATION', 'CONFIRMED', 'CANCELLED'])
 const INSTANT = z.iso.datetime({ offset: true, message: 'must be an ISO 8601 date-time with Z or an offset' }).transform((value) => new Date(value))
 
 export const customerListQuery = z.object({ status: STATUS.optional(), ...page }).strict()
 export const adminListQuery = z.object({
   status: STATUS.optional(),
+  /** Shortcuts: awaiting confirmation, manually / simulated confirmed, cancellation requested. */
+  view: z.enum(['AWAITING_CONFIRMATION', 'MANUALLY_CONFIRMED', 'SIMULATED_CONFIRMED', 'CANCELLATION_REQUESTED']).optional(),
   productId: z.uuid().optional(),
   sessionId: z.uuid().optional(),
   cohortId: z.uuid().optional(),
@@ -45,6 +47,26 @@ export const adminListQuery = z.object({
   createdFrom: INSTANT.optional(),
   createdTo: INSTANT.optional(),
   ...page,
+}).strict()
+
+// ---- Revision 3: manual confirmation and cancellation requests ----
+
+/** Free text must never carry card, CVV or bank/account numbers: refuse 12+ digits in a row (spaces and dashes ignored). */
+const noLongNumbers = (value: string) => !/\d{12,}/.test(value.replace(/[\s-]/g, ''))
+const LONG_NUMBER_MESSAGE = 'must not contain card, bank or other long numbers'
+const optionalSafeText = z.string().trim().max(500, 'must be at most 500 characters').refine(noLongNumbers, LONG_NUMBER_MESSAGE)
+  .transform((value) => (value === '' ? null : value)).nullable().optional()
+
+export const manualConfirmBody = z.object({
+  reason: z.enum(['PAYMENT_ARRANGED_OFFLINE', 'COMPLIMENTARY', 'OTHER'], { message: 'must be PAYMENT_ARRANGED_OFFLINE, COMPLIMENTARY or OTHER' }),
+  note: optionalSafeText,
+}).strict().superRefine((value, ctx) => {
+  if (value.reason === 'OTHER' && (value.note ?? '').length < 3) ctx.addIssue({ code: 'custom', path: ['note'], message: 'is required (at least 3 characters) when the reason is OTHER' })
+})
+export const cancellationRequestBody = z.object({ reason: optionalSafeText }).strict()
+/** Admin decision on a cancellation request: a reason is always required. */
+export const decisionBody = z.object({
+  reason: z.string().trim().min(3, 'must explain the decision (at least 3 characters)').max(500, 'must be at most 500 characters').refine(noLongNumbers, LONG_NUMBER_MESSAGE),
 }).strict()
 
 export type BookingCreateBody = z.infer<typeof bookingCreate>

@@ -10,6 +10,7 @@ import { REQUEST_ID_HEADER, requestId } from './middleware/request-id.js'
 import { createAuthModule } from './modules/auth/index.js'
 import type { CatalogRepository } from './modules/catalog/catalog.repository.js'
 import { catalogRouter } from './modules/catalog/catalog.routes.js'
+import { paymentConfigRouter } from './modules/payments/payment.routes.js'
 import { healthRouter } from './routes/health.js'
 import { readinessRouter, type ReadinessOptions } from './routes/ready.js'
 
@@ -23,9 +24,11 @@ export type AppOptions = {
   auth?: Router
   /** GET /ready dependencies. Defaults to no database: readiness then reports 503 not_configured. */
   readiness?: ReadinessOptions
+  /** Stage 2: whether the development payment simulator is on (env.paymentSimulator). Defaults to the env value. */
+  paymentSimulator?: boolean
 }
 
-export function createApp({ env, version, logger = createLogger(env.nodeEnv), catalog = null, auth, readiness = { checkDatabase: null } }: AppOptions): Express {
+export function createApp({ env, version, logger = createLogger(env.nodeEnv), catalog = null, auth, readiness = { checkDatabase: null }, paymentSimulator = env.paymentSimulator }: AppOptions): Express {
   const app = express()
   app.disable('x-powered-by')
   // Only trust X-Forwarded-* from the configured number of proxies (client IP for rate limiting).
@@ -41,6 +44,7 @@ export function createApp({ env, version, logger = createLogger(env.nodeEnv), ca
   v1.use(healthRouter(version))
   v1.use(readinessRouter(readiness))
   v1.use(catalogRouter(catalog))
+  v1.use(paymentConfigRouter(paymentSimulator))
   v1.use(auth ?? createAuthModule({ config: loadAuthConfig({}, env), repository: null, logger }))
   app.use('/api/v1', v1)
 

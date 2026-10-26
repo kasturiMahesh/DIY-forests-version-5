@@ -84,17 +84,19 @@ jobs:
           npx vitest run tests/db/bookings.postgres-concurrency.test.ts
           --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/pg-results.json"
       # Vitest reports a fully skipped run as success, so check the JSON report explicitly.
-      - name: Fail if the suite skipped tests, ran none, or had failures
+      # EXPECTED is the number of tests in bookings.postgres-concurrency.test.ts: update both together.
+      - name: Fail unless exactly the expected tests ran and all passed
         run: |
           node - "$RUNNER_TEMP/pg-results.json" <<'EOF'
+          const EXPECTED = 19
           const report = require(process.argv[2])
           const statuses = report.testResults.flatMap((file) => file.assertionResults.map((test) => test.status))
-          const ok = report.numTotalTests > 0
+          const ok = report.numTotalTests === EXPECTED
             && report.numPassedTests === report.numTotalTests
             && report.numFailedTests === 0 && report.numPendingTests === 0 && report.numTodoTests === 0
             && statuses.length === report.numTotalTests && statuses.every((status) => status === 'passed')
           console.log(`real-PostgreSQL suite: total=${report.numTotalTests} passed=${report.numPassedTests} failed=${report.numFailedTests} skipped=${report.numPendingTests} todo=${report.numTodoTests}`)
-          if (!ok) { console.error('The real-PostgreSQL suite did not fully run and pass.'); process.exit(1) }
+          if (!ok) { console.error(`The real-PostgreSQL suite did not run exactly ${EXPECTED} tests and pass them all.`); process.exit(1) }
           EOF
       - name: CI did not modify tracked files
         run: |

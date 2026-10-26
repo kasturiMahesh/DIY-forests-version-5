@@ -34,7 +34,7 @@ let app: ReturnType<typeof createApp>
 
 function buildApp() {
   const logger = memoryLogger(lines)
-  const bookings = createBookingRepository(prisma)
+  const bookings = createBookingRepository(prisma, { confirmationMode: 'payment' })
   const auth = createAuthModule({
     config, logger, repository: createAuthRepository(prisma),
     adminManagement: adminManagementRouter(createAdminRepository(prisma)),
@@ -75,7 +75,7 @@ const activeBookings = (where: { sessionId?: string; cohortId?: string }) => pri
 
 beforeAll(async () => {
   database = await startTestDatabase()
-  await prismaCli(['migrate', 'deploy'], database.url) // all five migrations
+  await prismaCli(['migrate', 'deploy'], database.url) // all migrations
   prisma = createPrismaClient(database.url, { maxConnections: 1 })
   // PGlite serves every connection from one backend session, which never picks up the migration's
   // database-level UTC default; set it explicitly (the repositories refuse to run otherwise).
@@ -130,6 +130,22 @@ beforeAll(async () => {
 afterAll(async () => {
   await prisma?.$disconnect()
   await database?.stop()
+})
+
+describe('canonical product slugs', () => {
+  it('an admin rename attempt is refused (409) and the published dates stay on the public site', async () => {
+    for (const [name, slug] of [['training', 'online-training'], ['workshop', 'offline-workshop'], ['webinar', 'monthly-webinar']] as const) {
+      const res = await admin('patch', `/products/${products[name]}`, { slug: `${slug}-renamed` })
+      expect(res.status).toBe(409)
+      expect(res.body.error.code).toBe('SLUG_LOCKED')
+    }
+    // The frontend looks these up by slug: every published date is still found the same way.
+    const listed = async (path: string) => (await request(app).get(`/api/v1${path}`)).body.data.map((item: { id: string }) => item.id)
+    expect(await listed('/cohorts?product=online-training')).toContain(ids.cohort)
+    expect(await listed('/sessions?product=offline-workshop')).toContain(ids.workshop)
+    expect(await listed('/sessions?product=monthly-webinar')).toContain(ids.webinar)
+    expect((await request(app).get('/api/v1/products/online-training')).body.data.price).toEqual({ amount: '500.00', currency: 'USD' })
+  })
 })
 
 describe('authentication and authorization', () => {
@@ -315,11 +331,17 @@ describe('creating bookings', () => {
   })
 
   it('offline workshop: INR 100,000 with the batch venue and end date', async () => {
-    const res = await book(people.ben, { productId: products.workshop, sessionId: ids.workshop, phone: { country: 'US', number: '(202) 555-0123' } })
+    const workshopKey = key()
+    const res = await book(people.ben, { productId: products.workshop, sessionId: ids.workshop, phone: { country: 'US', number: '(202) 555-0123' } }, workshopKey)
     expect(res.status).toBe(201)
     expect(res.body.data.price).toEqual({ amount: '100000.00', currency: 'INR' })
     expect(res.body.data.target).toMatchObject({ venue: 'Afforestt Farm, Kashipur', endsAt: expect.any(String) })
     expect(res.body.data.contact.phone.e164).toBe('+12025550123')
+    // Same key, same E.164 number, but a different country (CA shares +1): a different request, not a replay.
+    const otherCountry = await book(people.ben, { productId: products.workshop, sessionId: ids.workshop, phone: { country: 'CA', number: '(202) 555-0123' } }, workshopKey)
+    expect(otherCountry.status).toBe(409)
+    expect(otherCountry.body.error.code).toBe('IDEMPOTENCY_KEY_REUSED')
+    expect(await seats(ids.workshop)).toBe(1)
   })
 
   it('later price and name changes never alter existing bookings', async () => {
@@ -473,7 +495,7 @@ describe('admin bookings', () => {
 
   it('the dashboard reports real booking counts', async () => {
     const res = await admin('get', '/dashboard')
-    expect(res.body.data.bookings).toEqual({ pendingPayment: await prisma.booking.count({ where: { status: 'PENDING_PAYMENT' } }), cancelled: 2 })
+    expect(res.body.data.bookings).toEqual({ pendingPayment: await prisma.booking.count({ where: { status: 'PENDING_PAYMENT' } }), awaitingConfirmation: 0, confirmedManual: { total: 0, PAYMENT_ARRANGED_OFFLINE: 0, COMPLIMENTARY: 0, OTHER: 0 }, confirmedSimulated: 0, confirmedPaid: 0, cancelled: 2, expired: 0, cancellationRequests: { pending: 0, approved: 0, rejected: 0 } })
   })
 })
 
@@ -568,6 +590,8 @@ describe('booking table invariants (database level)', () => {
 
   it('immutable fields and reinstatement are blocked by the trigger', async () => {
     await expect(prisma.booking.update({ where: { id: ashaWebinarId }, data: { priceAmount: '1' } })).rejects.toThrow(/cannot change/)
+    await expect(prisma.booking.update({ where: { id: ashaWebinarId }, data: { currency: 'USD' } })).rejects.toThrow(/cannot change/)
+    await expect(prisma.booking.update({ where: { id: ashaWebinarId }, data: { productName: 'Renamed' } })).rejects.toThrow(/cannot change/)
     await expect(prisma.booking.update({ where: { id: ashaWebinarId }, data: { status: 'PENDING_PAYMENT', cancelledAt: null, cancelledBy: null, cancelReason: null } })).rejects.toThrow(/cannot be reinstated/)
   })
 })

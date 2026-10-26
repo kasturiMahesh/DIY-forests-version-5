@@ -100,7 +100,7 @@ export default function AccountPage() {
         <h2 id="bookings-heading">Your bookings</h2>
         {user.role === 'CUSTOMER' && session.kind === 'CUSTOMER' ? (
           <>
-            <p>Online payment isn’t available yet, so new bookings stay <strong>pending payment</strong>: your seat is held, and nothing has been charged.</p>
+            <p>Online payment isn’t available yet. New booking requests hold your seat while our team confirms them, and nothing is charged through this website. Our team aims to contact you by phone within 24 hours. Older bookings may still show as <strong>pending payment</strong>; nothing has been charged for them either.</p>
             <MyBookings csrfToken={csrfToken} />
           </>
         ) : <p>Staff accounts don’t make bookings. Customer bookings are in the admin area.</p>}

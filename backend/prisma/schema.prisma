@@ -1,5 +1,6 @@
 // DIY Forests catalog schema (Stage 2): products and their scheduled sessions.
-// Accounts (Stage 4A), schedules (Stage 4B) and bookings (Stage 4C) follow below. Payments are not modelled yet.
+// Accounts (Stage 4A), schedules (Stage 4B), bookings (Stage 4C) and simulated payment attempts (Stage 2
+// payment simulator, development only) follow below. No real payment provider is modelled yet.
 //
 // Constraints Prisma cannot express (CHECKs) live in the migration SQL; see
 // prisma/migrations/*_init_catalog/migration.sql and backend/README.md.
@@ -66,33 +67,33 @@ model Product {
 }
 
 model Session {
-  id          String        @id @default(uuid(7)) @db.Uuid
-  productId   String        @map("product_id") @db.Uuid
+  id             String        @id @default(uuid(7)) @db.Uuid
+  productId      String        @map("product_id") @db.Uuid
   /// The single real instant the session starts (stored in UTC by timestamptz).
-  startsAt    DateTime      @map("starts_at") @db.Timestamptz(3)
+  startsAt       DateTime      @map("starts_at") @db.Timestamptz(3)
   /// Null when the duration is not yet known. Must be after startsAt (CHECK constraint).
-  endsAt      DateTime?     @map("ends_at") @db.Timestamptz(3)
+  endsAt         DateTime?     @map("ends_at") @db.Timestamptz(3)
   /// IANA zone the organizer schedules in. Used to express local times; never changes the instant.
-  timezone    String        @default("Asia/Kolkata") @db.VarChar(64)
+  timezone       String        @default("Asia/Kolkata") @db.VarChar(64)
   /// Maximum attendees. Null = not set yet. Must be positive (CHECK constraint).
-  capacity    Int?
-  status      SessionStatus @default(DRAFT)
+  capacity       Int?
+  status         SessionStatus @default(DRAFT)
   /// Internal note for organizers (e.g. why a seeded session needs confirmation). Not for customers.
-  internalNote String?      @map("internal_note")
+  internalNote   String?       @map("internal_note")
   /// Stage 4B: where an in-person session happens (required by the API for offline workshops).
-  venue       String?       @db.VarChar(200)
+  venue          String?       @db.VarChar(200)
   /// Stage 4B: set only for the two sessions of an online-training cohort (with cohortSequence 1 or 2).
-  cohortId    String?       @map("cohort_id") @db.Uuid
-  cohortSequence Int?       @map("cohort_sequence") @db.SmallInt
+  cohortId       String?       @map("cohort_id") @db.Uuid
+  cohortSequence Int?          @map("cohort_sequence") @db.SmallInt
   /// Stage 4C: seats held by active bookings of this standalone session. Changed only by the bookings
   /// trigger (CHECK 0 <= seats_held <= capacity). Always 0 for cohort sessions: the cohort holds them.
-  seatsHeld   Int           @default(0) @map("seats_held")
-  createdAt   DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt   DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+  seatsHeld      Int           @default(0) @map("seats_held")
+  createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   // Restrict: a product that has sessions cannot be deleted; deactivate it instead.
-  product Product @relation(fields: [productId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  cohort  TrainingCohort? @relation(fields: [cohortId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  product  Product         @relation(fields: [productId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  cohort   TrainingCohort? @relation(fields: [cohortId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   bookings Booking[]
 
   /// One session per product per start instant; also the seed's upsert key.
@@ -175,9 +176,12 @@ model User {
   createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  sessions    AuthSession[]
-  auditEvents AuditEvent[]
-  bookings    Booking[]
+  sessions                    AuthSession[]
+  auditEvents                 AuditEvent[]
+  bookings                    Booking[]                    @relation("BookingCustomer")
+  confirmedBookings           Booking[]                    @relation("BookingConfirmedBy")
+  cancellationRequestsMade    BookingCancellationRequest[] @relation("CancellationRequestedBy")
+  cancellationRequestsDecided BookingCancellationRequest[] @relation("CancellationDecidedBy")
 
   @@unique([identityIssuer, identitySubject])
   @@index([email])
@@ -235,47 +239,115 @@ model AuditEvent {
 // (target validation and the seats_held counters).
 // ---------------------------------------------------------------------------
 
+/// PENDING_PAYMENT (payment mode), AWAITING_CONFIRMATION (manual mode, the default) and CONFIRMED hold a
+/// seat. CANCELLED is final; CONFIRMED can only become CANCELLED through an approved cancellation request.
 enum BookingStatus {
   PENDING_PAYMENT
   CANCELLED
+  CONFIRMED
+  AWAITING_CONFIRMATION
 
   @@map("booking_status")
+}
+
+/// How a CONFIRMED booking was confirmed: a successful (currently always simulated) payment attempt, or
+/// manually by an administrator. Neither is proof that money was received.
+enum ConfirmationMethod {
+  PAYMENT
+  MANUAL
+
+  @@map("confirmation_method")
+}
+
+/// Why an administrator confirmed a booking manually. PAYMENT_ARRANGED_OFFLINE is not proof of payment.
+enum ManualConfirmationReason {
+  PAYMENT_ARRANGED_OFFLINE
+  COMPLIMENTARY
+  OTHER
+
+  @@map("manual_confirmation_reason")
+}
+
+enum CancellationRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+
+  @@map("cancellation_request_status")
+}
+
+/// TRAINING_V1: online training, offline workshops (and other training). WEBINAR_V1: webinars.
+enum RefundPolicy {
+  TRAINING_V1
+  WEBINAR_V1
+
+  @@map("refund_policy")
+}
+
+/// What the WEBSITE did about money when a confirmed booking was cancelled. There is deliberately no
+/// "refunded" value: no payment provider exists.
+enum RefundOutcome {
+  NO_REFUND_SIMULATED_PAYMENT
+  NO_REFUND_COMPLIMENTARY
+  NOT_PROCESSED_BY_WEBSITE
+
+  @@map("refund_outcome")
 }
 
 enum BookingCanceller {
   CUSTOMER
   ADMIN
+  /// Automatic expiry after the payment deadline passed.
+  SYSTEM
 
   @@map("booking_canceller")
 }
 
 model Booking {
-  id               String            @id @default(uuid(7)) @db.Uuid
-  reference        String            @unique @db.VarChar(16)
-  userId           String            @map("user_id") @db.Uuid
-  productId        String            @map("product_id") @db.Uuid
-  sessionId        String?           @map("session_id") @db.Uuid
-  cohortId         String?           @map("cohort_id") @db.Uuid
-  status           BookingStatus     @default(PENDING_PAYMENT)
-  priceAmount      Decimal           @map("price_amount") @db.Decimal(12, 2)
-  currency         String            @db.Char(3)
-  productName      String            @map("product_name") @db.VarChar(160)
-  contactName      String            @map("contact_name") @db.VarChar(100)
-  phoneCountry     String            @map("phone_country") @db.Char(2)
-  phoneDialingCode String            @map("phone_dialing_code") @db.VarChar(4)
-  phoneNational    String            @map("phone_national") @db.VarChar(15)
-  phoneE164        String            @map("phone_e164") @db.VarChar(16)
-  idempotencyKey   String            @map("idempotency_key") @db.VarChar(64)
-  cancelledAt      DateTime?         @map("cancelled_at") @db.Timestamptz(3)
-  cancelledBy      BookingCanceller? @map("cancelled_by")
-  cancelReason     String?           @map("cancel_reason") @db.VarChar(500)
-  createdAt        DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt        DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+  id                 String                    @id @default(uuid(7)) @db.Uuid
+  reference          String                    @unique @db.VarChar(16)
+  userId             String                    @map("user_id") @db.Uuid
+  productId          String                    @map("product_id") @db.Uuid
+  sessionId          String?                   @map("session_id") @db.Uuid
+  cohortId           String?                   @map("cohort_id") @db.Uuid
+  status             BookingStatus             @default(PENDING_PAYMENT)
+  priceAmount        Decimal                   @map("price_amount") @db.Decimal(12, 2)
+  currency           String                    @db.Char(3)
+  productName        String                    @map("product_name") @db.VarChar(160)
+  contactName        String                    @map("contact_name") @db.VarChar(100)
+  phoneCountry       String                    @map("phone_country") @db.Char(2)
+  phoneDialingCode   String                    @map("phone_dialing_code") @db.VarChar(4)
+  phoneNational      String                    @map("phone_national") @db.VarChar(15)
+  phoneE164          String                    @map("phone_e164") @db.VarChar(16)
+  idempotencyKey     String                    @map("idempotency_key") @db.VarChar(64)
+  cancelledAt        DateTime?                 @map("cancelled_at") @db.Timestamptz(3)
+  cancelledBy        BookingCanceller?         @map("cancelled_by")
+  cancelReason       String?                   @map("cancel_reason") @db.VarChar(500)
+  /// Stage 2: an unpaid booking expires at this instant (created_at + 30 minutes, CHECK). NULL only for the
+  /// bookings that existed before the payment hold was introduced (grandfathered: they never expire).
+  /// Required for every new booking and immutable (trigger).
+  paymentDueAt       DateTime?                 @map("payment_due_at") @db.Timestamptz(3)
+  /// Confirmation history: confirmed_at and confirmation_method are set together on the transition into
+  /// CONFIRMED and kept (never edited) if an approved cancellation request later cancels the booking.
+  confirmedAt        DateTime?                 @map("confirmed_at") @db.Timestamptz(3)
+  /// Revision 3 (manual mode): an AWAITING_CONFIRMATION booking expires at this instant:
+  /// min(created_at + 48 hours, start - 24 hours) (trigger). Immutable.
+  confirmationDueAt  DateTime?                 @map("confirmation_due_at") @db.Timestamptz(3)
+  confirmationMethod ConfirmationMethod?       @map("confirmation_method")
+  /// Manual confirmation only: the active administrator, the reason and an optional note (required for OTHER).
+  confirmedByUserId  String?                   @map("confirmed_by_user_id") @db.Uuid
+  confirmationReason ManualConfirmationReason? @map("confirmation_reason")
+  confirmationNote   String?                   @map("confirmation_note") @db.VarChar(500)
+  createdAt          DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  user    User            @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  product Product         @relation(fields: [productId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  session Session?        @relation(fields: [sessionId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  cohort  TrainingCohort? @relation(fields: [cohortId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  user                 User                         @relation("BookingCustomer", fields: [userId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  confirmedBy          User?                        @relation("BookingConfirmedBy", fields: [confirmedByUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  product              Product                      @relation(fields: [productId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  session              Session?                     @relation(fields: [sessionId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  cohort               TrainingCohort?              @relation(fields: [cohortId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  paymentAttempts      PaymentAttempt[]
+  cancellationRequests BookingCancellationRequest[]
 
   @@unique([userId, idempotencyKey])
   @@index([userId, createdAt])
@@ -283,4 +355,89 @@ model Booking {
   @@index([cohortId, status])
   @@index([status, createdAt])
   @@map("bookings")
+}
+
+// ---------------------------------------------------------------------------
+// Stage 2: payment attempts (migration 20261026090100_payment_simulator). Only the development
+// simulator exists: no card numbers, CVVs or bank details are ever collected or stored, and simulated
+// payments are never revenue. Also enforced in that SQL: amount/currency must equal the booking
+// snapshot, at most one SUCCEEDED and one open (CREATED) attempt per booking, CREATED -> final once,
+// and (at commit) a SUCCEEDED attempt always has a CONFIRMED booking.
+// ---------------------------------------------------------------------------
+
+enum PaymentAttemptStatus {
+  CREATED
+  SUCCEEDED
+  FAILED
+  CANCELLED
+
+  @@map("payment_attempt_status")
+}
+
+enum PaymentProvider {
+  /// Development-only simulator. Not real money.
+  DEV_SIMULATOR
+
+  @@map("payment_provider")
+}
+
+model PaymentAttempt {
+  id             String               @id @default(uuid(7)) @db.Uuid
+  bookingId      String               @map("booking_id") @db.Uuid
+  provider       PaymentProvider
+  /// Always true for DEV_SIMULATOR (CHECK).
+  isSimulated    Boolean              @map("is_simulated")
+  status         PaymentAttemptStatus @default(CREATED)
+  /// Snapshot of the booking's price and currency (trigger-checked, immutable).
+  amount         Decimal              @db.Decimal(12, 2)
+  currency       String               @db.Char(3)
+  idempotencyKey String               @map("idempotency_key") @db.VarChar(64)
+  failureReason  String?              @map("failure_reason") @db.VarChar(200)
+  /// Set exactly when the attempt leaves CREATED (CHECK).
+  completedAt    DateTime?            @map("completed_at") @db.Timestamptz(3)
+  createdAt      DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime             @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([bookingId, idempotencyKey])
+  @@index([bookingId, createdAt])
+  @@map("payment_attempts")
+}
+
+// ---------------------------------------------------------------------------
+// Revision 3: cancellation requests for CONFIRMED bookings (migration
+// 20261027090100_manual_confirmation_cancellation_requests). The customer requests; an administrator
+// approves (the booking is cancelled in the same transaction) or rejects. The refund percentage is
+// ELIGIBILITY only, fixed at the server time of the request; refund_outcome records what the website did
+// (never "refunded": no payment provider exists). Also enforced in that SQL: one PENDING request per
+// booking, owner-only, before the start, database-recomputed policy/percentage/outcome, final decisions,
+// and (at commit) an APPROVED request always has its booking cancelled.
+// ---------------------------------------------------------------------------
+
+model BookingCancellationRequest {
+  id                String                    @id @default(uuid(7)) @db.Uuid
+  bookingId         String                    @map("booking_id") @db.Uuid
+  requestedByUserId String                    @map("requested_by_user_id") @db.Uuid
+  customerReason    String?                   @map("customer_reason") @db.VarChar(500)
+  requestedAt       DateTime                  @map("requested_at") @db.Timestamptz(3)
+  refundPolicy      RefundPolicy              @map("refund_policy")
+  /// 0, 50 or 100 (CHECK). Eligibility only: never a computed money amount.
+  refundPercent     Int                       @map("refund_percent") @db.SmallInt
+  status            CancellationRequestStatus @default(PENDING)
+  decidedByUserId   String?                   @map("decided_by_user_id") @db.Uuid
+  decisionReason    String?                   @map("decision_reason") @db.VarChar(500)
+  decidedAt         DateTime?                 @map("decided_at") @db.Timestamptz(3)
+  /// Set exactly when APPROVED (CHECK).
+  refundOutcome     RefundOutcome?            @map("refund_outcome")
+  createdAt         DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  booking     Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  requestedBy User    @relation("CancellationRequestedBy", fields: [requestedByUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  decidedBy   User?   @relation("CancellationDecidedBy", fields: [decidedByUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([bookingId, requestedAt])
+  @@index([status, requestedAt])
+  @@map("booking_cancellation_requests")
 }

@@ -1,5 +1,5 @@
 import { ApiError, type ApiClient } from '../api/client'
-import type { AdminBooking, AdminBookingSummary, AdminCohort, AdminProduct, AdminSession, BookingStatus, DashboardSummary, Money, Paged, ProductType, ScheduleStatus } from '../api/types'
+import type { AdminBooking, AdminBookingSummary, AdminCohort, AdminProduct, AdminSession, BookingStatus, CancellationRequest, DashboardSummary, ManualConfirmationReason, Money, Paged, ProductType, ScheduleStatus } from '../api/types'
 
 // Typed client for the Stage 4B admin API. Every call goes through the shared transport (cookies,
 // timeouts, error envelopes). Writes send the session's CSRF token. Responses are shape-checked.
@@ -11,7 +11,7 @@ const isSession = (value: unknown): value is AdminSession => hasId(value) && typ
 const isCohort = (value: unknown): value is AdminCohort => hasId(value) && typeof value.status === 'string' && Array.isArray(value.sessions) && isObject(value.product)
 const isDashboard = (value: unknown): value is DashboardSummary => isObject(value) && isObject(value.products) && isObject(value.upcoming) && isObject(value.bookings)
 const isBookingSummary = (value: unknown): value is AdminBookingSummary =>
-  hasId(value) && typeof value.reference === 'string' && (value.status === 'PENDING_PAYMENT' || value.status === 'CANCELLED') && isObject(value.customer) && isObject(value.price) && isObject(value.target)
+  hasId(value) && typeof value.reference === 'string' && (value.status === 'PENDING_PAYMENT' || value.status === 'AWAITING_CONFIRMATION' || value.status === 'CONFIRMED' || value.status === 'CANCELLED') && isObject(value.customer) && isObject(value.price) && isObject(value.target)
 const isBooking = (value: unknown): value is AdminBooking => isBookingSummary(value) && isObject((value as Record<string, unknown>).contact)
 
 const unexpected = () => new ApiError('invalid-response', 'The server sent an unexpected response.')
@@ -38,6 +38,9 @@ export type SessionChanges = Partial<Omit<SessionForm, 'productId'>>
 export type CohortForm = { productId: string; firstSessionStartsAt: string; secondSessionStartsAt?: string; capacity?: number | null; internalNote?: string | null }
 export type CohortChanges = Partial<Omit<CohortForm, 'productId'>>
 export type ListParams = { page?: number; pageSize?: number }
+export type AdminBookingView = 'AWAITING_CONFIRMATION' | 'MANUALLY_CONFIRMED' | 'SIMULATED_CONFIRMED' | 'CANCELLATION_REQUESTED'
+const isDecision = (value: unknown): value is { request: CancellationRequest; booking: AdminBooking } =>
+  isObject(value) && isObject(value.request) && typeof value.request.id === 'string' && isBooking(value.booking)
 
 export function createAdminApi(client: ApiClient, csrfToken: string) {
   const get = (path: string, signal?: AbortSignal) => client.send(`/admin${path}`, { signal })
@@ -69,11 +72,17 @@ export function createAdminApi(client: ApiClient, csrfToken: string) {
     publishCohort: async (cohortId: string) => item(await post(`/cohorts/${id(cohortId)}/publish`), isCohort),
     cancelCohort: async (cohortId: string, reason: string | null) => item(await post(`/cohorts/${id(cohortId)}/cancel`, { reason }), isCohort),
 
-    listBookings: async (params: ListParams & { status?: BookingStatus; productId?: string; q?: string } = {}, signal?: AbortSignal) =>
+    listBookings: async (params: ListParams & { status?: BookingStatus; view?: AdminBookingView; productId?: string; q?: string } = {}, signal?: AbortSignal) =>
       page(await get(`/bookings${query(params)}`, signal), isBookingSummary),
     getBooking: async (bookingId: string, signal?: AbortSignal) => item(await get(`/bookings/${id(bookingId)}`, signal), isBooking),
     /** The reason is required by the server (at least 3 characters). */
     cancelBooking: async (bookingId: string, reason: string) => item(await post(`/bookings/${id(bookingId)}/cancel`, { reason }), isBooking),
+    /** Manual confirmation of a booking awaiting confirmation. Not a payment record; the note must never hold card or bank details. */
+    confirmBooking: async (bookingId: string, reason: ManualConfirmationReason, note: string | null) =>
+      item(await post(`/bookings/${id(bookingId)}/confirm`, note ? { reason, note } : { reason }), isBooking),
+    /** Approving cancels the booking (seat released) in the same transaction; no refund is processed. */
+    approveCancellation: async (bookingId: string, reason: string) => item(await post(`/bookings/${id(bookingId)}/cancellation-request/approve`, { reason }), isDecision),
+    rejectCancellation: async (bookingId: string, reason: string) => item(await post(`/bookings/${id(bookingId)}/cancellation-request/reject`, { reason }), isDecision),
   }
 }
 

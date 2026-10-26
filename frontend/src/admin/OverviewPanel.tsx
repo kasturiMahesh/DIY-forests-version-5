@@ -23,7 +23,23 @@ export function OverviewPanel({ api }: { api: AdminApi }) {
             </div>
             <div className="admin-tile is-live">
               <h3>Bookings</h3>
-              <p><strong>{data.bookings.pendingPayment}</strong> pending payment · {data.bookings.cancelled} cancelled</p>
+              <p><strong>{data.bookings.awaitingConfirmation ?? 0}</strong> awaiting confirmation · {data.bookings.pendingPayment} pending payment · {data.bookings.cancelled} cancelled{data.bookings.expired ? ` (${data.bookings.expired} expired)` : ''}</p>
+            </div>
+            <div className="admin-tile is-live">
+              <h3>Manual confirmations</h3>
+              <p><strong>{data.bookings.confirmedManual?.total ?? 0}</strong> confirmed by staff</p>
+              {data.bookings.confirmedManual ? <p>{data.bookings.confirmedManual.PAYMENT_ARRANGED_OFFLINE} payment arranged offline · {data.bookings.confirmedManual.COMPLIMENTARY} complimentary · {data.bookings.confirmedManual.OTHER} other</p> : null}
+              <p className="admin-empty">Not proof of payment. Not revenue.</p>
+            </div>
+            <div className="admin-tile is-live">
+              <h3>Cancellation requests</h3>
+              <p><strong>{data.bookings.cancellationRequests?.pending ?? 0}</strong> awaiting review · {data.bookings.cancellationRequests?.approved ?? 0} approved · {data.bookings.cancellationRequests?.rejected ?? 0} rejected</p>
+              <p className="admin-empty">Eligibility only: no refunds are processed by the website.</p>
+            </div>
+            <div className="admin-tile is-live">
+              <h3>Simulated confirmations</h3>
+              <p><strong>{data.bookings.confirmedSimulated ?? 0}</strong> confirmed by the development simulator</p>
+              <p className="admin-empty">Test mode only — no money received. Not revenue.</p>
             </div>
             <div className="admin-tile is-live">
               <h3>Cancelled (upcoming)</h3>
@@ -42,7 +58,7 @@ export function OverviewPanel({ api }: { api: AdminApi }) {
               )
             })}
           </div>
-          <p className="admin-footnote">Online payment isn’t connected yet: every active booking is pending payment and holds one seat. Seats held are shown next to each capacity.</p>
+          <p className="admin-footnote">Online payment isn’t connected, so there is no revenue figure and paid bookings stay at {data.bookings.confirmedPaid ?? 0}. Awaiting, pending and confirmed bookings each hold one seat; unconfirmed requests are released at their deadline. Seats held are shown next to each capacity.</p>
         </>
       )}
     </LoadState>

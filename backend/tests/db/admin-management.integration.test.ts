@@ -55,7 +55,7 @@ const auditCount = (action: string) => prisma.auditEvent.count({ where: { action
 
 beforeAll(async () => {
   database = await startTestDatabase()
-  await prismaCli(['migrate', 'deploy'], database.url) // all five migrations
+  await prismaCli(['migrate', 'deploy'], database.url) // all migrations
   prisma = createPrismaClient(database.url, { maxConnections: 1 })
   await prisma.$executeRawUnsafe(`SET TIME ZONE 'Etc/GMT-5'`)
 }, 180_000)
@@ -151,6 +151,25 @@ describe('Stage 4B admin management', () => {
       const event = await prisma.auditEvent.findFirstOrThrow({ where: { action: 'PRODUCT_UPDATED', targetId: id } })
       expect(event.details).toMatchObject({ price: { from: { amount: '149.00', currency: 'INR' }, to: { amount: '179.50', currency: 'INR' } } })
       await asAdmin('patch', `/products/${id}`, { price: { amount: '149', currency: 'INR' } })
+    })
+
+    it('locks the three canonical slugs (409 SLUG_LOCKED); other fields and other products stay editable', async () => {
+      for (const slug of ['online-training', 'offline-workshop', 'monthly-webinar']) {
+        const id = await productId(slug)
+        const res = await asAdmin('patch', `/products/${id}`, { slug: `${slug}-renamed` })
+        expect(res.status).toBe(409)
+        expect(res.body.error.code).toBe('SLUG_LOCKED')
+        expect((await prisma.product.findUniqueOrThrow({ where: { id } })).slug).toBe(slug)
+        expect((await publicGet(`/products/${slug}`)).status).toBe(200)
+      }
+      // The admin form always sends the slug: an unchanged canonical slug is accepted with the other edits.
+      const webinar = await productId('monthly-webinar')
+      expect((await asAdmin('patch', `/products/${webinar}`, { slug: 'monthly-webinar', name: 'Monthly Webinar' })).status).toBe(200)
+      // No other product can take a canonical slug; non-canonical slugs can still change.
+      const other = await productId('weekend-webinar')
+      expect((await asAdmin('patch', `/products/${other}`, { slug: 'monthly-webinar' })).body.error.code).toBe('SLUG_LOCKED')
+      expect((await asAdmin('patch', `/products/${other}`, { slug: 'weekend-webinars' })).body.data.slug).toBe('weekend-webinars')
+      expect((await asAdmin('patch', `/products/${other}`, { slug: 'weekend-webinar' })).status).toBe(200)
     })
 
     it.each([

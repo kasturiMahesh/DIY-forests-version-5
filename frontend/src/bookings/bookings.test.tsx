@@ -9,7 +9,7 @@ import { AuthContext, type AuthState } from '../auth/auth-context'
 import { CatalogContext, type CatalogState } from '../catalog/catalog-context'
 import { WebinarBanner } from '../catalog/WebinarBanner'
 import HomePage, { CheckoutPanel, CheckoutResults, DateChipModal } from '../pages/HomePage'
-import { requestBookings, UNCONFIRMED_MESSAGE, type CheckoutItem } from './checkout'
+import { requestBookings, suggestedContactName, UNCONFIRMED_MESSAGE, type CheckoutItem } from './checkout'
 
 const booking: CustomerBooking = {
   id: '0199a000-0000-7000-8000-0000000000b1', reference: 'DF-7K2M9QXA', status: 'PENDING_PAYMENT',
@@ -162,6 +162,12 @@ describe('checkout screen', () => {
     expect(new RegExp(`^(?:${pattern})$`, 'v').test('+91 (98765) 43210')).toBe(true)
   })
 
+  it('pre-fills a name the server accepts: "(DEV)" and other rejected characters are dropped', () => {
+    const dev: MeResponse = { ...customer, user: { ...customer.user, displayName: 'Test Customer One (DEV)' } }
+    const html = panel(auth({ status: 'signed-in', me: dev }))
+    expect(html).toMatch(/id="checkoutName"[^>]*value="Test Customer One"/)
+  })
+
   it('staff sessions are told to use a customer account', () => {
     const admin: MeResponse = { ...customer, user: { ...customer.user, role: 'ADMIN', pool: 'ADMIN' }, session: { ...customer.session, kind: 'ADMIN' } }
     const html = panel(auth({ status: 'signed-in', me: admin }))
@@ -192,6 +198,54 @@ describe('checkout results', () => {
     expect(html).toContain('still in your cart')
     expect(html).not.toContain('M20 33l8 8 16-18') // the success check mark
     expect(html).not.toContain('DF-')
+  })
+})
+
+describe('suggestedContactName', () => {
+  // Mirror of the server rule in backend/src/modules/bookings/booking.schemas.ts.
+  const SERVER_RULE = /^[\p{L}\p{M}][\p{L}\p{M}\s.'’-]*$/u
+  it.each([
+    ['Test Customer One (DEV)', 'Test Customer One'],
+    ['Asha Rao', 'Asha Rao'],
+    ["Anaïs O'Neill-Dupont", "Anaïs O'Neill-Dupont"],
+    ['Dr. Śrī Ramesh', 'Dr. Śrī Ramesh'],
+    ['José  María   ', 'José María'],
+    ['राम कुमार', 'राम कुमार'],
+    ['  -Priya_Shah!  ', 'Priya Shah'],
+  ])('%j → %j', (input, expected) => {
+    expect(suggestedContactName(input)).toBe(expected)
+    expect(SERVER_RULE.test(expected)).toBe(true)
+  })
+  it.each([null, undefined, '', '(DEV)', '12345', '***'])('%j → empty (the customer types a name)', (input) => {
+    expect(suggestedContactName(input)).toBe('')
+  })
+  it('keeps the 100-character limit', () => {
+    const long = suggestedContactName('A'.repeat(150))
+    expect(long).toHaveLength(100)
+    expect(SERVER_RULE.test(long)).toBe(true)
+  })
+})
+
+describe('home page: navigation, webinar label and footer', () => {
+  const webinarProduct = { id: 'w', slug: 'monthly-webinar', name: 'Monthly Webinar', type: 'WEBINAR' as const, summary: null, description: null, audience: null, durationLabel: null, price: { amount: '149.00', currency: 'INR' } }
+  const catalog: CatalogState = { status: 'ready', products: [webinarProduct], nextWebinar: null, workshopBatches: [], trainingCohorts: [], retry: () => {} }
+  const html = () => renderWith(auth({ status: 'signed-out' }), <CatalogContext.Provider value={catalog}><HomePage /></CatalogContext.Provider>)
+  it('every menu link points to a section that exists on the page', () => {
+    const page = html()
+    const targets = [...page.matchAll(/<a href="#([a-z-]+)" data-section/g)].map((match) => match[1]!)
+    expect(targets.length).toBeGreaterThan(0)
+    for (const id of targets) expect(page).toContain(`id="${id}"`)
+    expect(page).not.toContain('#how-it-works')
+  })
+  it('the webinar label shows the catalog price, not "free"', () => {
+    const page = html()
+    expect(page).toContain('Live online · ₹149')
+    expect(page).not.toMatch(/Free to low-cost/i)
+  })
+  it('the footer has no internship-demo wording', () => {
+    const page = html()
+    expect(page).toContain('© 2026 DIY Forests. A training platform from Afforestt.')
+    expect(page).not.toMatch(/internship/i)
   })
 })
 

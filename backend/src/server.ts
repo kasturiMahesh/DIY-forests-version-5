@@ -11,9 +11,14 @@ import { createAuthRepository } from './modules/auth/auth.repository.js'
 import { createAdminRepository } from './modules/admin/admin.repository.js'
 import { adminManagementRouter } from './modules/admin/admin.routes.js'
 import { createAuthModule } from './modules/auth/index.js'
+import { createExpiryScheduler, type ExpiryScheduler } from './modules/bookings/booking-holds.js'
 import { createBookingRepository } from './modules/bookings/booking.repository.js'
-import { adminBookingsRouter, customerBookingsRouter } from './modules/bookings/booking.routes.js'
+import { adminBookingDecisionsRouter, adminBookingsRouter, customerBookingsRouter, customerCancellationRequestsRouter } from './modules/bookings/booking.routes.js'
+import { createCancellationRequestRepository } from './modules/bookings/cancellation-requests.js'
+import { createManualConfirmationRepository } from './modules/bookings/manual-confirmation.js'
 import { createCatalogRepository } from './modules/catalog/catalog.repository.js'
+import { createPaymentRepository } from './modules/payments/payment.repository.js'
+import { customerPaymentsRouter } from './modules/payments/payment.routes.js'
 
 // Local development convenience: load backend/.env if present (Node's built-in loader, no dependency).
 if (existsSync('.env')) process.loadEnvFile('.env')
@@ -57,25 +62,40 @@ if (authConfig.mode === 'dev') logger.warn('DEVELOPMENT SIGN-IN IS ENABLED (AUTH
 if (authConfig.mode !== 'disabled' && !prisma) logger.warn('Authentication is configured but there is no database; sign-in will report unavailable')
 logger.info('Authentication', { mode: authConfig.mode })
 
-const bookings = prisma ? createBookingRepository(prisma) : null
+if (env.paymentSimulator) logger.warn('DEVELOPMENT PAYMENT SIMULATOR IS ENABLED (PAYMENT_SIMULATOR=true): fake payments only, no money is taken or received')
+
+logger.info('Booking confirmation mode', { mode: env.bookingConfirmationMode })
+
+const bookings = prisma ? createBookingRepository(prisma, { confirmationMode: env.bookingConfirmationMode }) : null
+const payments = prisma && bookings ? createPaymentRepository(prisma, bookings) : null
+const manualConfirmations = prisma && bookings ? createManualConfirmationRepository(prisma, bookings) : null
+const cancellationRequests = prisma && bookings ? createCancellationRequestRepository(prisma, bookings) : null
+// Stage 2: unpaid holds expire after 30 minutes. Swept every minute, before availability reads
+// (throttled) and before each booking for the same dates; every sweep is idempotent and race-safe.
+const expiry: ExpiryScheduler | null = bookings ? createExpiryScheduler({ run: (at) => bookings.expireOverdue(at), logger }) : null
 const auth = createAuthModule({
   config: authConfig, repository: prisma ? createAuthRepository(prisma) : null, logger,
   adminManagement: adminManagementRouter(prisma ? createAdminRepository(prisma) : null),
-  adminBookings: adminBookingsRouter(bookings),
-  customerBookings: customerBookingsRouter(bookings),
+  adminBookings: adminBookingsRouter(bookings, undefined, adminBookingDecisionsRouter(manualConfirmations, cancellationRequests)),
+  customerBookings: customerBookingsRouter(bookings, undefined, [
+    customerPaymentsRouter(payments, { simulator: env.paymentSimulator }),
+    customerCancellationRequestsRouter(cancellationRequests),
+  ]),
 })
 let lifecycle = { isShuttingDown: () => false }
 const db = prisma
 const app = createApp({
-  env, version, logger, catalog: db ? createCatalogRepository(db) : null, auth,
+  env, version, logger, catalog: db ? createCatalogRepository(db, expiry ? { beforeAvailabilityRead: expiry.onRead } : {}) : null, auth,
   // Readiness: the database answers and its session is UTC (the same guard every repository uses).
   readiness: { checkDatabase: db ? () => assertUtcSession(db) : null, isShuttingDown: () => lifecycle.isShuttingDown() },
 })
 const server = app.listen(env.port, () => {
-  logger.info('API listening', { port: env.port, nodeEnv: env.nodeEnv, version })
+  logger.info('API listening', { port: env.port, nodeEnv: env.nodeEnv, version, paymentSimulator: env.paymentSimulator })
+  expiry?.start()
 })
 
-const shutdown = createShutdown({ server, disconnect: () => (db ? db.$disconnect() : Promise.resolve()), logger })
+// The expiry timer stops before the database pool closes (it is also unref'd, so it never holds the process).
+const shutdown = createShutdown({ server, disconnect: () => { expiry?.stop(); return db ? db.$disconnect() : Promise.resolve() }, logger })
 lifecycle = shutdown
 process.on('SIGTERM', () => shutdown.shutdown('SIGTERM'))
 process.on('SIGINT', () => shutdown.shutdown('SIGINT'))

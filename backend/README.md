@@ -2,9 +2,11 @@
 
 Backend for the DIY Forests training platform: a Node.js + TypeScript + Express modular monolith with a versioned REST API under `/api/v1`.
 
-**Stage 4C (current):** the Stage 1 skeleton, the Stage 2 PostgreSQL catalog schema, migrations and development seed, the Stage 3 **read-only catalog API**, Stage 4A **customer and admin authentication**, Stage 4B **admin management**, and Stage 4C **bookings** (customer and admin booking APIs, seat counters, idempotent creation, cancellation). Authentication uses OIDC sign-in (Amazon Cognito, or a guarded local dev provider), server-side sessions in PostgreSQL, CSRF protection, rate limits, an operator CLI for admins, and an audit trail. **Payments and email aren't built:** every booking stays `PENDING_PAYMENT`. See "Authentication" and "Bookings" below.
+**Current (Revision 3 booking workflow):** the Stage 1 skeleton, the Stage 2 PostgreSQL catalog schema, migrations and development seed, the Stage 3 **read-only catalog API**, Stage 4A **customer and admin authentication**, Stage 4B **admin management**, and Stage 4C **bookings** (customer and admin booking APIs, seat counters, idempotent creation, cancellation). Authentication uses OIDC sign-in (Amazon Cognito, or a guarded local dev provider), server-side sessions in PostgreSQL, CSRF protection, rate limits, an operator CLI for admins, and an audit trail. On top of Stage 4C: the **payment simulator (development only)**: payment attempts, `CONFIRMED` bookings and a 30-minute payment hold with automatic expiry; and **Revision 3**: manual confirmation by staff (the default), a 24-hour booking cutoff, cancellation requests and refund *eligibility*. **No real payment provider, webhooks, refunds or email exist**; simulated payments are never money and never revenue. See "Authentication", "Bookings", "Payment simulator" and "Manual confirmation and cancellation requests" below.
 
-> **Real PostgreSQL status for bookings: not verified.** The booking migration, constraints, triggers and APIs have been tested against PGlite (in-memory PostgreSQL with a single connection). Behaviour under truly concurrent connections is covered by `tests/db/bookings.postgres-concurrency.test.ts`, which runs only against a real, empty, disposable PostgreSQL database (see "Bookings" below) and has not been run yet.
+> **Naming note.** "Stage 1"–"Stage 4C" are the original build stages (Stage 2 = the PostgreSQL catalog schema). The later payment-simulator work was planned as its own "Stage 2" of the booking roadmap, so in this README and in migration comments, **"Stage 2 payment simulator"** (migrations `20261026…`) means that later work, not the catalog-schema stage. **"Revision 3"** (migrations `20261027…`) is the manual-confirmation and cancellation-request workflow built on top of it.
+
+> **Real PostgreSQL status for bookings: concurrency suite verified once, manually.** The booking migration, constraints, triggers and APIs are tested against PGlite (in-memory PostgreSQL with a single connection) on every `npm test`. Behaviour under truly concurrent connections is covered by `tests/db/bookings.postgres-concurrency.test.ts`, which runs only against a real, empty, disposable PostgreSQL database (see "Bookings" below). Recorded result (2026-10-22, local disposable `postgres:16-alpine` container, PostgreSQL 16.15, working tree on top of commit `3ca609b`): all six migrations applied to a fresh empty database, then **8 passed, 0 failed, 0 skipped**. Latest recorded result (2026-10-26, throwaway local `postgres:16-alpine` container, PostgreSQL 16.15, database `diyforests_test`, removed afterwards): all ten migrations applied, then **19 passed, 0 failed, 0 skipped**, including the payment-simulator and Revision 3 races. These are recorded past runs, not something `npm test` repeats; a plain `npm test` skips the suite. In CI it runs in the `backend-postgres` job. The suite refuses the development database (`diyforests_dev`, or any target matching the `backend/.env` connection) before connecting.
 
 > **Live Cognito status: not verified.** Authentication has been tested with the local dev provider and against a fake OpenID provider that runs inside the test suite. No real Cognito user pool has been used yet.
 
@@ -53,6 +55,8 @@ Configuration is validated at startup, and the process exits with code 1 and a c
 | `CORS_ORIGINS` | `http://localhost:5173,http://localhost:4173` | Comma-separated origins. **Required in production.** |
 | `DATABASE_URL` | none | Runtime PostgreSQL connection (on Neon, the **pooled** string). Secret. Needed by the seed and, in later stages, the API. |
 | `DIRECT_DATABASE_URL` | none | Used only by the Prisma CLI for migrations (on Neon, the **direct** string). Secret. |
+| `BOOKING_CONFIRMATION_MODE` | `manual` | `manual` or `payment`. `payment` is accepted **only with `NODE_ENV=development` and `PAYMENT_SIMULATOR=true`**; otherwise the API refuses to start. Never enables the simulator itself. See "Manual confirmation and cancellation requests". |
+| `PAYMENT_SIMULATOR` | off | `true` or `false`. `true` enables the **development payment simulator** and is accepted **only with `NODE_ENV=development`**: with any other `NODE_ENV` the API refuses to start. See "Payment simulator". |
 
 `npm run dev` and `npm start` work without a database. Without `DATABASE_URL`, `/api/v1/health` still answers, the catalog endpoints return `503 CATALOG_UNAVAILABLE`, and the startup log says "Database not configured".
 
@@ -232,6 +236,120 @@ Every error uses one JSON shape:
 | 503 | `CATALOG_UNAVAILABLE` |
 
 Unexpected errors are logged server-side with their stack trace. Clients get only a generic message.
+
+## Payment simulator (Stage 2, development only)
+
+**Simulated payments are not real money and never count as revenue.** No card number, CVV, bank credential or other payment detail is ever collected or stored. There is no real payment provider, webhook, refund or reconciliation: those are out of scope.
+
+**Turning it on** (local development only):
+
+```bash
+# backend/.env
+NODE_ENV=development
+PAYMENT_SIMULATOR=true
+```
+
+Three layers keep it out of production:
+1. `loadEnv` refuses to start when `PAYMENT_SIMULATOR=true` and `NODE_ENV` is anything but `development`. Any value other than `true`/`false` is rejected too.
+2. The payment **write** routes are not registered unless the simulator is enabled (they answer 404).
+3. Each simulator request re-checks `NODE_ENV` at runtime and answers 404 outside `development` (or the automated `test` runs).
+
+The website shows simulator controls only in a **Vite dev build** (`import.meta.env.DEV`) **and** when `GET /api/v1/payments/config` reports `simulator.enabled: true`. Production builds contain neither the controls nor the simulator requests. Every simulated confirmation is shown as **"Confirmed — simulated payment, no money received."**
+
+**Migrations** (additive):
+- `20261026090000_payment_states_enum` adds `CONFIRMED` to `booking_status` and `SYSTEM` to `booking_canceller`. These are in their own migration because PostgreSQL can't use a new enum value in the same transaction that adds it.
+- `20261026090100_payment_simulator` adds:
+  - `bookings.payment_due_at` and `bookings.confirmed_at` (nullable; existing rows keep NULL);
+  - the `payment_attempts` table;
+  - CHECKs, partial unique indexes, and replaced `bookings_check_target` / `bookings_maintain_seats` functions (same names);
+  - new triggers (two of them deferred to commit).
+
+**Database rules** (enforced by PostgreSQL, not just the API):
+- A new booking must be `PENDING_PAYMENT` with `payment_due_at = created_at + 30 minutes`. The deadline can never be changed or added later.
+- `CONFIRMED` only from `PENDING_PAYMENT`, only with a `SUCCEEDED` attempt. It is final (never back to pending, never cancelled).
+- A `SYSTEM` cancellation (expiry) needs a deadline that has passed, so grandfathered bookings can't be expired.
+- Payment attempts:
+  - A new attempt needs a `PENDING_PAYMENT` booking and exactly the booking's `price_amount` and `currency`. The provider is `DEV_SIMULATOR` with `is_simulated = true`.
+  - The snapshot fields are immutable. The status can change once, `CREATED` → `SUCCEEDED` | `FAILED` | `CANCELLED`, then is final.
+  - At most one `SUCCEEDED` and one open (`CREATED`) attempt per booking.
+  - Success is accepted only while the booking is pending and inside its payment window.
+- At commit:
+  - a `SUCCEEDED` attempt's booking is `CONFIRMED`;
+  - a booking that is no longer pending has no open attempt.
+- One active (pending **or** confirmed) booking per customer per session/cohort.
+
+**Customer API** (under `/api/v1/me/bookings`, same guards as bookings: customer session, CSRF + Origin for writes; staff sessions get 403; another customer's booking is 404):
+
+| Method and path | Purpose |
+|---|---|
+| `GET /:id/payment-attempts` | The booking's attempts, newest first (always available, read-only) |
+| `POST /:id/payment-attempts` | **Simulator only.** Header `Idempotency-Key`, empty body. 201 with `{ attempt, booking }`. Same key again: 200 and `Idempotent-Replayed: true`. Errors: `PAYMENT_ATTEMPT_OPEN`, `BOOKING_ALREADY_CONFIRMED`, `BOOKING_NOT_PAYABLE`, `PAYMENT_WINDOW_EXPIRED` (409). |
+| `POST /:id/payment-attempts/:attemptId/simulate` | **Simulator only.** Body `{ outcome: "SUCCEEDED" \| "FAILED" }` (nothing else is accepted). Success confirms the booking in the same transaction (seat counts unchanged). Failure leaves it pending with its seat held; another attempt may be started within the window. The same outcome again is a 200 replay; a different final outcome is 409 `PAYMENT_ATTEMPT_COMPLETED`. |
+| `POST /:id/payment-attempts/:attemptId/cancel` | **Simulator only.** Cancels that attempt only; the booking stays pending and keeps its seat. |
+| `GET /api/v1/payments/config` | Public: `{ simulator: { enabled }, realPayments: false }` |
+
+A result that arrives after the booking was cancelled or expired is **rejected** (409 `BOOKING_NOT_PAYABLE` or `PAYMENT_WINDOW_EXPIRED`) and audited as `PAYMENT_RESULT_REJECTED`; it never confirms the booking. If the deadline has passed when a payment call arrives, the booking is expired in the same transaction.
+
+**Admins** can see a booking's attempts read-only (`payment.attempts` on `GET /admin/bookings/:id`), filter by `status=CONFIRMED`, and see `confirmedSimulated` on the dashboard. That count is kept separate from `confirmedPaid`, which is always 0 in this stage. There is **no** admin route to confirm a booking or simulate a payment.
+
+**Expiry** (`src/modules/bookings/booking-holds.ts`). Overdue holds are released:
+- every 60 s by a background timer (started after `listen`, unref'd, stopped on shutdown before the database pool closes);
+- before availability reads (catalog sessions/cohorts; throttled to one sweep per 5 s per process, and failures never break the read);
+- before each booking for the same dates.
+
+Each expiry is a short transaction: lock the target, then a conditional `UPDATE … WHERE status = 'PENDING_PAYMENT' AND payment_due_at <= now`. That makes it idempotent and race-safe: concurrent sweeps, cancellations and payments can't double-release a seat.
+
+**Lock order** (everywhere: create, cancel, expire, pay): target row `FOR UPDATE` → booking row → its payment attempts.
+
+**Audit events:**
+- `PAYMENT_ATTEMPT_CREATED`, `PAYMENT_ATTEMPT_SUCCEEDED`, `PAYMENT_ATTEMPT_FAILED`, `PAYMENT_ATTEMPT_CANCELLED`;
+- `BOOKING_CONFIRMED` (with `simulated: true, noMoneyReceived: true`);
+- `BOOKING_EXPIRED` (actor label `system`, no user);
+- `PAYMENT_RESULT_REJECTED`.
+
+## Manual confirmation and cancellation requests (Revision 3)
+
+While no payment provider exists, bookings are confirmed by staff. **Manual confirmation is not proof of payment, and nothing here is revenue.** No refund is ever processed or claimed by the website.
+
+**Booking states**
+
+| From → to | Who | Rule (enforced by the database trigger `bookings_check_target`) |
+|---|---|---|
+| new → `AWAITING_CONFIRMATION` | customer (manual mode, default) | before `start − 24h`; `confirmation_due_at = min(created_at + 48h, start − 24h)` |
+| new → `PENDING_PAYMENT` | customer (payment mode: development + simulator) | before `start − 24h`; `payment_due_at = created_at + 30m` |
+| `AWAITING_CONFIRMATION` → `CONFIRMED` | active admin | method `MANUAL`, reason, note required for `OTHER`, `confirmed_at < confirmation_due_at` |
+| `PENDING_PAYMENT` → `CONFIRMED` | simulator success | method `PAYMENT` with a successful attempt |
+| `AWAITING_CONFIRMATION` / `PENDING_PAYMENT` → `CANCELLED` | customer, admin (reason), or `SYSTEM` once the deadline passed | seat released once |
+| `CONFIRMED` → `CANCELLED` | admin only, through an **approved cancellation request** | in the same transaction as the approval |
+
+`CANCELLED` is final. Confirmation history (`confirmed_at`, method, admin, reason, note) is written once and kept after an approved cancellation. Start = the session start, or the first session of an online-training cohort. Start times, and so deadlines and refund tiers, can't move while seats are held (admins can't reschedule a session or cohort that holds seats).
+
+**Clock.** Each operation uses one API-server timestamp written into the row; the database compares stored timestamps with stored deadlines. Manual confirmation and cancellation requests sample the clock *after* taking their locks. Confirmation is allowed while `now < confirmation_due_at`; expiry applies from `confirmation_due_at <= now`, so at exactly the deadline the booking has expired. The database also refuses a `confirmed_at` or `requested_at` more than 5 minutes older than its own clock, which assumes the API and database clocks are NTP-synchronized.
+
+**Admin API** (under `/api/v1/admin`, behind the admin guards):
+
+| Method and path | Purpose |
+|---|---|
+| `POST /bookings/:id/confirm` | Body `{ reason: PAYMENT_ARRANGED_OFFLINE \| COMPLIMENTARY \| OTHER, note? }` (note ≤ 500, required ≥ 3 for `OTHER`, no 12+ digit runs). After the deadline the booking is expired instead and the answer is `409 CONFIRMATION_WINDOW_EXPIRED`. An identical repeat is a 200 replay; anything else non-confirmable is `409 BOOKING_NOT_CONFIRMABLE`. |
+| `POST /bookings/:id/cancel` | Existing: also **declines** an awaiting booking (reason required). |
+| `POST /bookings/:id/cancellation-request/approve` | Body `{ reason }` (3–500). Approves the pending request **and** cancels the booking in one transaction; `409 ALREADY_DECIDED` if already decided. |
+| `POST /bookings/:id/cancellation-request/reject` | Body `{ reason }`. The booking stays confirmed; the customer may request again. |
+| `GET /bookings?view=AWAITING_CONFIRMATION\|MANUALLY_CONFIRMED\|SIMULATED_CONFIRMED\|CANCELLATION_REQUESTED` | List shortcuts. The dashboard counts each category separately; `confirmedPaid` stays 0. |
+
+**Customer API**: `POST /me/bookings/:id/cancellation-request` with `{ reason? }`, for the owner of a `CONFIRMED` booking before its start (`409 REQUEST_AFTER_START` after). A request while one is pending returns it again (200, `Idempotent-Replayed`). Direct cancellation of a `CONFIRMED` booking is refused; awaiting and pending bookings can still be cancelled directly.
+
+**Refund eligibility** (fixed at the server time the request is submitted; exact milliseconds; also computed and checked by the database functions `refund_policy_for` / `refund_percent_for`):
+- `TRAINING_V1` (online training, offline workshops, other training): ≥ 7 × 24h before the start 100%; ≥ 3 × 24h 50%; otherwise 0%.
+- `WEBINAR_V1`: 100% strictly before the start.
+- The percentage is eligibility only, never a money amount. On approval the database-checked `refund_outcome` records what the website did: `NO_REFUND_SIMULATED_PAYMENT`, `NO_REFUND_COMPLIMENTARY`, or `NOT_PROCESSED_BY_WEBSITE` (payment arranged offline / other: anything arranged with staff is handled outside the website). There is no "refunded" value. Real-provider refunds, captured amounts and an "offline payment received" action are deferred.
+
+**Integrity**: one pending request per booking; the database recomputes the policy, percentage and outcome; decisions are final; and a deferred check at commit refuses an approved request whose booking is not cancelled. Together with "`CONFIRMED` → `CANCELLED` only with an approved request", approval and cancellation can only commit together.
+
+**Audit events**: `BOOKING_CREATED` (mode, deadline), `BOOKING_CONFIRMED_MANUALLY` (reason code, whether a note exists — never the note), `BOOKING_CONFIRMATION_REJECTED_LATE`, `BOOKING_EXPIRED` (which deadline), `BOOKING_CANCELLED` (`kind: DECLINED` / `REQUEST_APPROVED`), `BOOKING_CANCELLATION_REQUESTED` (policy, percentage — never the customer's text), `BOOKING_CANCELLATION_APPROVED` (outcome), `BOOKING_CANCELLATION_REJECTED`.
+
+**Migrations** (additive):
+- `20261027090000_awaiting_confirmation_enum`: the new status only (PostgreSQL can't use a new enum value in the transaction that adds it).
+- `20261027090100_manual_confirmation_cancellation_requests`: new types, nullable booking columns, the `booking_cancellation_requests` table, constraints, partial indexes, functions and the replaced trigger functions. **It stops (and changes nothing) if any booking was already confirmed before it**, because such rows have no confirmation method; no existing row is rewritten.
 
 ## Request handling
 
@@ -502,15 +620,17 @@ Request bodies are strict, so unknown fields are a 400. Lists return `{ data, me
 ## Bookings (Stage 4C)
 
 Migration `20261018090000_booking_foundation` adds the `bookings` table, `seats_held` counters on `sessions` and `training_cohorts`, CHECK constraints, partial unique indexes and two triggers:
-- `bookings_check_target` checks that the target matches the product and blocks changes to customer, target, price and reference, and any reinstatement.
+- `bookings_check_target` checks that the target matches the product and blocks changes to customer, target, product name, price, currency and reference, and any reinstatement. (Product name was added by the follow-up migration `20261022090000_booking_snapshot_immutable`, which only replaces this function.)
 - `bookings_maintain_seats` keeps the counters in step with active bookings.
 
 **Rules**
 - One booking is one seat for one customer on exactly one target. A webinar or offline-workshop booking takes a `sessionId`. An online-training booking takes the `cohortId`, which covers both Friday sessions; booking a single cohort session is refused.
 - The target must be **published**, belong to the chosen **active, non-archived** product, and not have started. Workshops also need their venue and end date. Cohorts must still be two valid 4-hour Fridays exactly 7 days apart.
 - Name, price and currency are **snapshotted** when the booking is made. No tax is added. Later admin changes never alter existing bookings.
-- **No payment exists.** Every booking is `PENDING_PAYMENT` and holds its seat until it is cancelled.
-- Customers can cancel their own pending booking until the dates start. Admins can cancel any pending booking, and must give a reason (3–500 characters).
+- **Revision 3: bookings close 24 hours before the start** (both modes; `409 BOOKING_CUTOFF_PASSED`). In **manual mode (the default)** a new booking is `AWAITING_CONFIRMATION` until staff confirm or decline it (see "Manual confirmation and cancellation requests").
+- **Payment hold (Stage 2, payment mode only: development + simulator).** A new booking is `PENDING_PAYMENT` with `payment_due_at = created_at + 30 minutes`. If it is not `CONFIRMED` by then it **expires**: `CANCELLED` by `SYSTEM` with reason "Payment not completed in time", seat released, `BOOKING_EXPIRED` audited. Bookings made before migration `20261026090100_payment_simulator` have no deadline (**grandfathered**): they never expire and can never be confirmed manually.
+- `PENDING_PAYMENT` and `CONFIRMED` both hold one seat; pending → confirmed never changes the counters. `CONFIRMED` is final: it can't return to pending and **can't be cancelled** (customer or admin) until an approved refund policy exists.
+- Customers can cancel their own pending booking until the dates start. Admins can cancel any pending booking, and must give a reason (3–500 characters). Cancelling also cancels the booking's open payment attempt.
 - Phone numbers are validated and normalized **on the server** (`src/modules/bookings/phone.ts`). They're stored as country, dialing code, national number and E.164. The project has no phone-number library, so only the countries listed in that file are accepted: IN, US, CA, GB, AU, NZ, AE, SG, DE, FR, NL and AM. Any other country gets `400 PHONE_COUNTRY_UNSUPPORTED` rather than a guessed number.
 
 **Customer API** (under `/api/v1/me`). These routes need a signed-in **customer** session; staff sessions get 403 `CUSTOMER_ACCOUNT_REQUIRED`. Writes need CSRF + Origin, and responses are `no-store`.
@@ -520,7 +640,7 @@ Migration `20261018090000_booking_foundation` adds the `bookings` table, `seats_
 | `POST /me/bookings` | Body `{ productId, sessionId \| cohortId, contactName, phone: { country, number } }`, plus header `Idempotency-Key` (16–64 of `A-Z a-z 0-9 _ -`). Returns 201 with the booking. A retry with the same key and the same details returns 200, the same booking and `Idempotent-Replayed: true`. The same key with different details is 409 `IDEMPOTENCY_KEY_REUSED`. Extra limit: `AUTH_RATE_LIMIT_MAX` attempts per window per IP. |
 | `GET /me/bookings?status=&page=&pageSize=` | The customer's own bookings, newest first |
 | `GET /me/bookings/:id` | One of the customer's own bookings. Someone else's booking is 404, so its existence is never revealed. |
-| `POST /me/bookings/:id/cancel` | Body `{ reason? }`. Releases the seat. |
+| `POST /me/bookings/:id/cancel` | Body `{ reason? }`. Releases the seat. A `CONFIRMED` booking is 409 `BOOKING_NOT_CANCELLABLE`. |
 
 Errors: `TARGET_TYPE_MISMATCH`, `TARGET_PRODUCT_MISMATCH`, `PHONE_INVALID`, `PHONE_COUNTRY_UNSUPPORTED`, `IDEMPOTENCY_KEY_REQUIRED` (400); `PRODUCT_NOT_FOUND`, `SESSION_NOT_FOUND`, `COHORT_NOT_FOUND`, `BOOKING_NOT_FOUND` (404); `PRODUCT_UNAVAILABLE`, `TARGET_NOT_BOOKABLE`, `TARGET_STARTED`, `ALREADY_BOOKED`, `SOLD_OUT`, `BOOKING_NOT_CANCELLABLE`, `IDEMPOTENCY_KEY_REUSED` (409); `BOOKINGS_UNAVAILABLE` (503).
 
@@ -539,12 +659,25 @@ Errors: `TARGET_TYPE_MISMATCH`, `TARGET_PRODUCT_MISMATCH`, `PHONE_INVALID`, `PHO
 - an admin capacity change or cancellation of that target waits for the booking, and vice versa;
 - a same-key request that was waiting is replayed instead of booked twice.
 
-Cancellation is a conditional update (`WHERE status = 'PENDING_PAYMENT'`), so only one of several concurrent cancellations succeeds. Database failures are logged by code and constraint name only, never with row data.
+Cancellation is a conditional update (`WHERE status = 'PENDING_PAYMENT'`), so only one of several concurrent cancellations (or a cancellation racing a payment or an expiry) succeeds. Database failures are logged by code and constraint name only, never with row data.
 
 **Testing levels**
 - `tests/bookings/*.test.ts`: unit tests.
 - `tests/db/bookings.integration.test.ts`: HTTP + PGlite. These use real constraints, triggers and transactions over **one** connection, so competing requests are serialized and this is not proof of behaviour under concurrency.
-- `tests/db/bookings.postgres-concurrency.test.ts`: **real PostgreSQL only**. It is skipped unless `TEST_POSTGRES_URL` is set. It refuses any database that isn't empty or whose name doesn't contain `test`, applies all migrations, then races up to 20 connections for the last seat, the same idempotency key, cancellations and capacity reductions:
+- `tests/db/payments.integration.test.ts` (HTTP + PGlite, injected clock) and `tests/db/payment-hold.migration.test.ts` (the Stage 2 migrations applied on top of existing Stage 4C rows): see "Payment simulator".
+- `tests/db/manual-confirmation.integration.test.ts`, `tests/db/cancellation-requests.integration.test.ts` (HTTP + PGlite, injected clock) and `tests/db/manual-confirmation.migration.test.ts` (the Revision 3 migrations on existing Stage 4C/Stage 2 rows): see "Manual confirmation and cancellation requests".
+- `tests/db/bookings.postgres-concurrency.test.ts`: **real PostgreSQL only**. It is skipped unless `TEST_POSTGRES_URL` is set. It refuses any database that isn't empty or whose name doesn't contain `test`, applies all migrations, then runs 19 tests:
+  - 20 connections race for the last seat, and for 5 seats (no overbooking);
+  - the same submission sent 8 times at once creates one booking;
+  - 8 concurrent cancellations release the seat once;
+  - capacity reductions racing bookings never leave more seats held than capacity;
+  - one idempotency key sent at once with US and CA phone numbers (both +1, same digits) gives one booking and one `409 IDEMPOTENCY_KEY_REUSED`;
+  - the product name, price and currency snapshot cannot be changed in the database (trigger);
+  - Stage 2: simulated payment success racing the customer's cancellation (each booking ends CONFIRMED or CANCELLED, never both); success just inside the window racing the expiry sweep (exactly one wins); 8 identical simulated successes at once (one confirmation, 7 replays); 8 concurrent payment starts (one open attempt); overlapping expiry sweeps (each booking expired once);
+  - Revision 3: 20 customers racing for the last seat in manual mode; manual confirmation 1 ms before the deadline racing the expiry sweep at the deadline (exactly one wins); confirmation racing the customer cancelling; approve racing reject; 4 concurrent approvals (one wins, seat released once); 8 identical cancellation requests at once (one request);
+  - afterwards every seat counter equals its active (pending, awaiting or confirmed) bookings.
+
+  CI (`backend-postgres` job) requires exactly 19 tests, all passed; update that count in `.github/workflows/ci.yml` when adding or removing a test here.
 
   ```bash
   TEST_POSTGRES_URL=postgresql://postgres:postgres@127.0.0.1:5432/diyforests_test npx vitest run tests/db/bookings.postgres-concurrency.test.ts

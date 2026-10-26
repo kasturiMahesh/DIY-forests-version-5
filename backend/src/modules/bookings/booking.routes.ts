@@ -4,7 +4,9 @@ import { HttpError } from '../../lib/http-error.js'
 import { idParams, parse } from '../admin/admin.schemas.js'
 import { getAuth } from '../auth/auth.middleware.js'
 import type { BookingRepository, Paged } from './booking.repository.js'
-import { adminCancelBody, adminListQuery, bookingCreate, customerCancelBody, customerListQuery, IDEMPOTENCY_HEADER, idempotencyKeyOrThrow, phoneOrThrow } from './booking.schemas.js'
+import { adminCancelBody, adminListQuery, bookingCreate, cancellationRequestBody, customerCancelBody, customerListQuery, decisionBody, IDEMPOTENCY_HEADER, idempotencyKeyOrThrow, manualConfirmBody, phoneOrThrow } from './booking.schemas.js'
+import type { CancellationRequestRepository } from './cancellation-requests.js'
+import type { ManualConfirmationRepository } from './manual-confirmation.js'
 
 const unavailable = (cause?: unknown) =>
   new HttpError(503, 'BOOKINGS_UNAVAILABLE', 'Bookings are temporarily unavailable. Please try again shortly.', cause === undefined ? undefined : { cause: sanitizedDbError(cause) })
@@ -28,7 +30,7 @@ const id = (req: Request) => parse(idParams, req.params, 'path').id
  * then CSRF + Origin for writes). The user id always comes from the session, never from the request,
  * so a customer can only ever see or cancel their own bookings.
  */
-export function customerBookingsRouter(repository: BookingRepository | null, now: () => Date = () => new Date()): Router {
+export function customerBookingsRouter(repository: BookingRepository | null, now: () => Date = () => new Date(), extensions?: Router | Router[]): Router {
   const router = Router()
   const repo = () => {
     if (!repository) throw unavailable()
@@ -45,6 +47,8 @@ export function customerBookingsRouter(repository: BookingRepository | null, now
     }
     next()
   })
+  // Stage 2 payment attempts and Revision 3 cancellation requests: behind the same customer-account check.
+  for (const extension of [extensions ?? []].flat()) router.use(extension)
 
   router.post('/bookings', async (req, res) => {
     const idempotencyKey = idempotencyKeyOrThrow(req.get(IDEMPOTENCY_HEADER))
@@ -77,12 +81,14 @@ export function customerBookingsRouter(repository: BookingRepository | null, now
 }
 
 /** Admin bookings, mounted at /api/v1/admin AFTER the admin guards (ADMIN session + role + pool + issuer, CSRF). */
-export function adminBookingsRouter(repository: BookingRepository | null, now: () => Date = () => new Date()): Router {
+export function adminBookingsRouter(repository: BookingRepository | null, now: () => Date = () => new Date(), extensions?: Router | Router[]): Router {
   const router = Router()
   const repo = () => {
     if (!repository) throw unavailable()
     return repository
   }
+
+  for (const extension of [extensions ?? []].flat()) router.use(extension)
 
   router.get('/bookings', async (req, res) => {
     const { page, pageSize, ...filter } = parse(adminListQuery, req.query, 'query')
@@ -101,5 +107,53 @@ export function adminBookingsRouter(repository: BookingRepository | null, now: (
     res.json({ data: await run(() => repo().cancelByAdmin(bookingId, reason, actor, now())) })
   })
 
+  return router
+}
+
+/**
+ * Revision 3 customer cancellation requests, mounted inside customerBookingsRouter (customer session,
+ * CSRF + Origin, customer account). Only CONFIRMED bookings; direct cancellation stays for the others.
+ */
+export function customerCancellationRequestsRouter(repository: CancellationRequestRepository | null, now: () => Date = () => new Date()): Router {
+  const router = Router()
+  router.post('/bookings/:id/cancellation-request', async (req, res) => {
+    const bookingId = id(req)
+    const { reason } = parse(cancellationRequestBody, req.body ?? {}, 'body')
+    if (!repository) throw unavailable()
+    const result = await run(() => repository.request(getAuth(res)!.user.id, bookingId, reason ?? null, { clock: now, requestId: res.locals.requestId }))
+    if (result.replayed) res.set('Idempotent-Replayed', 'true')
+    res.status(result.replayed ? 200 : 201).json({ data: { request: result.request, booking: result.booking } })
+  })
+  return router
+}
+
+/**
+ * Revision 3 admin decisions, mounted inside adminBookingsRouter (admin guards, CSRF + Origin): manual
+ * confirmation of AWAITING_CONFIRMATION bookings and decisions on cancellation requests. The repositories
+ * re-check everything inside one transaction, and the database enforces it again.
+ */
+export function adminBookingDecisionsRouter(manual: ManualConfirmationRepository | null, cancellations: CancellationRequestRepository | null, now: () => Date = () => new Date()): Router {
+  const router = Router()
+  const actor = (res: Response) => getAuth(res)!.user.id
+  const context = (res: Response) => ({ clock: now, requestId: res.locals.requestId as string | undefined })
+
+  router.post('/bookings/:id/confirm', async (req, res) => {
+    const bookingId = id(req)
+    const { reason, note } = parse(manualConfirmBody, req.body ?? {}, 'body')
+    if (!manual) throw unavailable()
+    const result = await run(() => manual.confirm(actor(res), bookingId, { reason, note: note ?? null }, context(res)))
+    if (result.replayed) res.set('Idempotent-Replayed', 'true')
+    res.json({ data: result.booking })
+  })
+
+  for (const decision of ['approve', 'reject'] as const) {
+    router.post(`/bookings/:id/cancellation-request/${decision}`, async (req, res) => {
+      const bookingId = id(req)
+      const { reason } = parse(decisionBody, req.body ?? {}, 'body')
+      if (!cancellations) throw unavailable()
+      const result = await run(() => cancellations[decision](actor(res), bookingId, reason, context(res)))
+      res.json({ data: result })
+    })
+  }
   return router
 }

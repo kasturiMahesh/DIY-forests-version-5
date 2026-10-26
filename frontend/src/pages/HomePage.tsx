@@ -10,8 +10,8 @@ import { api, newIdempotencyKey } from '../api/client'
 import { calendarDaysInclusive, formatDateRange, formatDayMonth, formatPrice, formatSessionDateTime, formatTime, staticMoney } from '../api/format'
 import type { Money, PublicSession } from '../api/types'
 import { useAuth } from '../auth/auth-context'
-import { PHONE_COUNTRIES, bookingWhen } from '../bookings/booking-display'
-import { requestBookings, type CheckoutResult } from '../bookings/checkout'
+import { PHONE_COUNTRIES, bookingStatusLabel, bookingWhen } from '../bookings/booking-display'
+import { requestBookings, suggestedContactName, type CheckoutResult } from '../bookings/checkout'
 import { priceFor, useCatalog, type CatalogState } from '../catalog/catalog-context'
 import { WebinarBanner } from '../catalog/WebinarBanner'
 import { webinar } from '../webinarData'
@@ -29,7 +29,9 @@ const BrandMark = ({ fill, stroke }: { fill: string; stroke: string }) => (
 const ArtImage = ({ art }: { art: Art }) => <img src={art.src} alt={art.alt} loading="lazy" decoding="async" />
 
 const NAV_ITEMS = [
-  ['trainings', 'Trainings'], ['how-it-works', 'How It Works'], ['offline', 'Offline Workshop'], ['webinar', 'Webinar'],
+  // "How It Works" was removed: it pointed to #how-it-works, a section that never existed (also not in the
+  // original site). Re-add it together with a real section once the content is approved.
+  ['trainings', 'Trainings'], ['offline', 'Offline Workshop'], ['webinar', 'Webinar'],
   ['trainees', 'Trainees'], ['programs', 'Projects'], ['reviews', 'Reviews'],
 ] as const
 
@@ -477,7 +479,7 @@ export function CheckoutPanel({ cart, onClose, onDone, onRotateKey }: {
       <div className="order-total"><span>Total</span><span>{formatCartTotals(totals)}</span></div>
     </>
   )
-  const footnote = <p style={{ fontSize: '.76rem', textAlign: 'center', margin: '12px 0 0' }}>No payment is taken now. Online payment isn’t available yet, so each booking is held for you as <strong>pending payment</strong>.</p>
+  const footnote = <p style={{ fontSize: '.76rem', textAlign: 'center', margin: '12px 0 0' }}>No payment is taken now. Each booking request holds your seat while our team confirms it; we aim to contact you by phone within 24 hours. Bookings close 24 hours before the start.</p>
 
   if (auth.status === 'loading') return <>{summary}<p role="status" style={{ marginTop: 16 }}>Checking your sign-in…</p></>
   if (auth.status === 'unavailable' || auth.status === 'error') {
@@ -528,7 +530,7 @@ export function CheckoutPanel({ cart, onClose, onDone, onRotateKey }: {
     <>{summary}
       <form id="checkoutForm" onSubmit={submit}>
         <div className="checkout-fields">
-          <label htmlFor="checkoutName">Full name<input id="checkoutName" name="name" autoComplete="name" required maxLength={100} defaultValue={user.displayName ?? ''} /></label>
+          <label htmlFor="checkoutName">Full name<input id="checkoutName" name="name" autoComplete="name" required maxLength={100} defaultValue={suggestedContactName(user.displayName)} /></label>
           <label htmlFor="checkoutEmail">Email address<input id="checkoutEmail" name="email" type="email" value={user.email} readOnly aria-describedby="checkoutEmailNote" /></label>
           <small id="checkoutEmailNote" style={{ marginTop: -6, color: 'var(--ink-soft)', fontSize: '.74rem' }}>From your account.</small>
           <div className="checkout-phone">
@@ -555,14 +557,14 @@ export function CheckoutResults({ results, onClose }: { results: CheckoutResult[
       <button className="icon-btn close-x" id="modalCloseBtn2" aria-label="Close" onClick={onClose}><CloseIcon /></button>
       <div className="pay-success">
         {booked.length ? <svg viewBox="0 0 64 64" fill="none" aria-hidden="true"><circle cx="32" cy="32" r="30" fill="var(--forest)" /><path d="M20 33l8 8 16-18" stroke="var(--on-forest)" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" /></svg> : null}
-        <h3>{booked.length === 0 ? 'Booking not completed' : failed.length ? 'Some bookings were received' : `Booking${booked.length > 1 ? 's' : ''} received: payment pending`}</h3>
-        {booked.length ? <p>Your seat is held. <strong>No payment has been taken</strong>; the booking stays pending payment until payment is arranged.</p> : null}
+        <h3>{booked.length === 0 ? 'Booking not completed' : failed.length ? 'Some bookings were received' : `Booking${booked.length > 1 ? 's' : ''} received: ${booked.every((result) => result.ok && result.booking.status === 'PENDING_PAYMENT') ? 'payment pending' : 'awaiting confirmation'}`}</h3>
+        {booked.length ? <p>Your seat is held while our team confirms your booking. <strong>No payment has been taken</strong> through this website. Our team aims to contact you by phone within 24 hours; if we cannot confirm in time, the request is released automatically.</p> : null}
         <ul className="booking-results">
           {results.map((result) => result.ok ? (
             <li key={result.cartId}>
               <strong>{result.booking.product.name}</strong> · {result.booking.reference}
               <small>{bookingWhen(result.booking.target)}</small>
-              <small>Pending payment · {formatPrice(result.booking.price)}</small>
+              <small>{bookingStatusLabel(result.booking)} · {formatPrice(result.booking.price)}</small>
             </li>
           ) : (
             <li key={result.cartId} className="is-failed" role="alert">
@@ -913,7 +915,7 @@ export default function HomePage() {
 
         <section id="webinar">
           <div className="wrap">
-            <div className="section-head"><div><span className="section-tag">Free to low-cost</span><h2>Monthly webinar</h2></div></div>
+            <div className="section-head"><div><span className="section-tag">Live online · {formatPrice(webinarPrice)}</span><h2>Monthly webinar</h2></div></div>
             <WebinarBanner catalog={catalog} price={webinarPrice} onReserve={reserveWebinar} />
           </div>
         </section>
@@ -985,7 +987,7 @@ export default function HomePage() {
           </div>
         </div>
         <div className="wrap foot-bottom">
-          <span>© 2026 DIY Forests. A demo page built for internship review.</span>
+          <span>© 2026 DIY Forests. A training platform from Afforestt.</span>
           <span>Made with the Miyawaki method in mind 🌱</span>
         </div>
       </footer>
@@ -1009,7 +1011,7 @@ export default function HomePage() {
         </div>
         <div className="cart-summary" id="cartSummary" style={{ display: cart.length ? 'block' : 'none' }}>
           <div className="cart-row total"><span>Total</span><span className="price" id="cartTotal">{formatCartTotals(totals)}</span></div>
-          <p style={{ fontSize: '.76rem', margin: '6px 0 10px' }}>Prices as listed. No payment is taken at checkout: bookings are held as pending payment.</p>
+          <p style={{ fontSize: '.76rem', margin: '6px 0 10px' }}>Prices as listed. No payment is taken at checkout: our team confirms each booking request. Bookings close 24 hours before the start.</p>
           <button className="btn btn-primary btn-block" id="checkoutBtn" onClick={() => { if (cart.length) setModal({ kind: 'checkout' }) }}>Proceed to checkout</button>
         </div>
       </aside>

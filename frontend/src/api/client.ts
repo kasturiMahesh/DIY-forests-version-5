@@ -1,4 +1,4 @@
-import type { AdminMeResponse, AuthUser, BookingRequest, BookingStatus, CustomerBooking, MeResponse, Money, PageMeta, ProductType, PublicCohort, PublicProduct, PublicProductRef, PublicSession, SessionListMeta, SessionQuery } from './types'
+import type { AdminMeResponse, AuthUser, BookingRequest, BookingStatus, CancellationRequest, CustomerBooking, MeResponse, Money, PageMeta, PaymentAttempt, PaymentConfig, ProductType, PublicCohort, PublicProduct, PublicProductRef, PublicSession, SessionListMeta, SessionQuery } from './types'
 
 export type ApiErrorKind = 'network' | 'timeout' | 'http' | 'invalid-response'
 
@@ -59,7 +59,22 @@ const isAdminMeResponse: Guard<AdminMeResponse> = (value): value is AdminMeRespo
 const isLogoutResponse: Guard<{ logoutUrl: string | null }> = (value): value is { logoutUrl: string | null } =>
   isObject(value) && (value.logoutUrl === null || (isString(value.logoutUrl) && value.logoutUrl.startsWith('https://'))) // only a provider page over https
 
-const BOOKING_STATUSES: readonly BookingStatus[] = ['PENDING_PAYMENT', 'CANCELLED']
+const BOOKING_STATUSES: readonly BookingStatus[] = ['PENDING_PAYMENT', 'AWAITING_CONFIRMATION', 'CONFIRMED', 'CANCELLED']
+const REQUEST_STATUSES = ['PENDING', 'APPROVED', 'REJECTED']
+const REFUND_OUTCOMES = ['NO_REFUND_SIMULATED_PAYMENT', 'NO_REFUND_COMPLIMENTARY', 'NOT_PROCESSED_BY_WEBSITE']
+export const isCancellationRequest = (value: unknown): value is CancellationRequest =>
+  isObject(value) && isString(value.id) && REQUEST_STATUSES.includes(value.status as string) && isInstant(value.requestedAt) &&
+  [0, 50, 100].includes(value.refundPercent as number) && (value.refundOutcome === null || REFUND_OUTCOMES.includes(value.refundOutcome as string))
+const ATTEMPT_STATUSES = ['CREATED', 'SUCCEEDED', 'FAILED', 'CANCELLED']
+export const isPaymentAttempt: Guard<PaymentAttempt> = (value): value is PaymentAttempt =>
+  isObject(value) && isString(value.id) && ATTEMPT_STATUSES.includes(value.status as string) && value.provider === 'DEV_SIMULATOR' && typeof value.simulated === 'boolean' &&
+  isMoney(value.amount) && isInstant(value.createdAt) && (value.completedAt === null || isInstant(value.completedAt))
+const isBookingPayment = (value: unknown) =>
+  value === undefined || (isObject(value) && (value.dueAt === null || isInstant(value.dueAt)) && Array.isArray(value.attempts) && value.attempts.every(isPaymentAttempt))
+/** A confirmation is only ever shown with the server's own simulated-payment notice. */
+const isConfirmation = (value: unknown) => value === undefined || value === null || (isObject(value) && isInstant(value.at) && typeof value.simulated === 'boolean')
+const isPaymentConfig: Guard<PaymentConfig> = (value): value is PaymentConfig =>
+  isObject(value) && isObject(value.simulator) && typeof value.simulator.enabled === 'boolean' && typeof value.realPayments === 'boolean'
 const isTarget = (value: unknown) =>
   isObject(value) && isString(value.id) && isString(value.timezone) && (
     (value.kind === 'session' && isInstant(value.startsAt) && (value.endsAt === null || isInstant(value.endsAt))) ||
@@ -70,6 +85,9 @@ export const isCustomerBooking: Guard<CustomerBooking> = (value): value is Custo
   BOOKING_STATUSES.includes(value.status as BookingStatus) && isMoney(value.price) && isObject(value.product) && isString(value.product.name) &&
   isTarget(value.target) && typeof value.canCancel === 'boolean' && isInstant(value.createdAt) &&
   (value.cancellation === null || (isObject(value.cancellation) && isInstant(value.cancellation.at))) &&
+  isBookingPayment(value.payment) && isConfirmation(value.confirmation) && (value.status !== 'CONFIRMED' || isObject(value.confirmation)) &&
+  (value.confirmationDueAt === undefined || value.confirmationDueAt === null || isInstant(value.confirmationDueAt)) &&
+  (value.cancellationRequest === undefined || value.cancellationRequest === null || isCancellationRequest(value.cancellationRequest)) &&
   isObject(value.contact) && isString(value.contact.name)
 const isPageMeta = (value: unknown): value is PageMeta => isObject(value) && Number.isInteger(value.page) && Number.isInteger(value.pageSize) && Number.isInteger(value.total)
 
@@ -226,9 +244,28 @@ export function createApiClient({ baseUrl = '', fetch: fetchImpl = globalThis.fe
       return { items, meta: body.meta }
     },
 
+    /**
+     * Asks DIY Forests to cancel a CONFIRMED booking. The booking stays active until our team decides; the
+     * refund percentage returned is eligibility only, fixed now. An already pending request is returned again.
+     */
+    async requestCancellation(csrfToken: string, bookingId: string, reason: string | null): Promise<{ request: CancellationRequest; booking: CustomerBooking }> {
+      const body = await request(`/me/bookings/${encodeURIComponent(bookingId)}/cancellation-request`, { method: 'POST', csrfToken, body: reason ? { reason } : {} })
+      if (isObject(body) && isObject(body.data) && isCancellationRequest(body.data.request) && isCustomerBooking(body.data.booking)) return { request: body.data.request, booking: body.data.booking }
+      throw new ApiError('invalid-response', 'The server sent an unexpected response.')
+    },
+
     async cancelMyBooking(csrfToken: string, bookingId: string, reason: string | null): Promise<CustomerBooking> {
       return expectData(await request(`/me/bookings/${encodeURIComponent(bookingId)}/cancel`, { method: 'POST', csrfToken, body: reason ? { reason } : {} }), isCustomerBooking)
     },
+
+    // ---- Stage 2: development payment simulator (fake payments only, never real money) ----
+
+    /** Whether the server's development payment simulator is enabled. */
+    async getPaymentConfig(signal?: AbortSignal): Promise<PaymentConfig> {
+      return expectData(await request('/payments/config', { signal }), isPaymentConfig)
+    },
+
+    // The simulator's write calls live in bookings/simulator-api.ts (dev builds only).
 
     /** Server-side admin check. 403 = signed in but not an admin. */
     async getAdminMe(signal?: AbortSignal): Promise<AdminMeResponse> {

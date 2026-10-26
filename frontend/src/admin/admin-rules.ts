@@ -3,6 +3,8 @@ import type { ProductType } from '../api/types'
 import { addDaysToIstLocal, istLocalToInstant, istLocalWeekday } from './admin-time'
 
 export const TYPE_LABEL: Record<ProductType, string> = { ONLINE_TRAINING: 'Online training', OFFLINE_WORKSHOP: 'Offline workshop', WEBINAR: 'Webinar' }
+/** Same list as the server: the website finds these offerings and their dates by slug, so it cannot change. */
+export const CANONICAL_PRODUCT_SLUGS: readonly string[] = ['online-training', 'offline-workshop', 'monthly-webinar']
 const SLUG = /^[a-z0-9]+(-[a-z0-9]+)*$/
 const AMOUNT = /^\d{1,10}(\.\d{1,2})?$/
 

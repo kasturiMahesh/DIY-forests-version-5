@@ -112,6 +112,20 @@ describe('admin forms', () => {
     expect(edit).toMatch(/<input[^>]*disabled=""[^>]*value="Webinar"|value="Webinar"[^>]*disabled=""/)
   })
 
+  it('product form: the three canonical slugs are fixed when editing; other slugs stay editable', () => {
+    const draft = { name: 'X', type: 'WEBINAR' as const, summary: '', description: '', audience: '', durationLabel: '', amount: '149.00', currency: 'INR' }
+    const slugInput = (html: string) => /<input[^>]*pattern="\[a-z0-9\][^>]*>/.exec(html)![0]
+    for (const slug of ['online-training', 'offline-workshop', 'monthly-webinar']) {
+      const html = render(<ProductEditor api={api} initial={{ ...draft, slug }} productId="p1" onDone={noop} onCancel={noop} />)
+      expect(slugInput(html)).toContain('disabled=""')
+      expect(html).toContain('Fixed: the website uses this address')
+    }
+    const other = render(<ProductEditor api={api} initial={{ ...draft, slug: 'weekend-webinar' }} productId="p2" onDone={noop} onCancel={noop} />)
+    expect(slugInput(other)).not.toContain('disabled=""')
+    const create = render(<ProductEditor api={api} initial={{ ...draft, slug: '' }} productId={null} onDone={noop} onCancel={noop} />)
+    expect(slugInput(create)).not.toContain('disabled=""')
+  })
+
   it('workshop form: venue and end date are required and editable', () => {
     const session: AdminSession = {
       id: 's1', startsAt: '2026-11-07T04:00:00.000Z', endsAt: '2026-11-11T12:00:00.000Z', timezone: 'Asia/Kolkata', capacity: 12, seatsHeld: 0, status: 'PUBLISHED',

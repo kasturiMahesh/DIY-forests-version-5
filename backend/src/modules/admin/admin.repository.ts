@@ -16,6 +16,11 @@ export type Paged<T> = { items: T[]; total: number }
 const definedOnly = <T extends Record<string, unknown>>(value: T) => Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)) as { [K in keyof T]: Exclude<T[K], undefined> }
 const notFound = (what: string) => new HttpError(404, `${what.toUpperCase()}_NOT_FOUND`, `${what[0]!.toUpperCase()}${what.slice(1)} not found`)
 const conflict = (code: string, message: string) => new HttpError(409, code, message)
+/**
+ * The website finds the three offerings, their prices and their published dates by these slugs, so they
+ * cannot be renamed (and no other product can take one). Other product fields stay editable.
+ */
+export const CANONICAL_PRODUCT_SLUGS: readonly string[] = ['online-training', 'offline-workshop', 'monthly-webinar']
 const capacityBelowHeld = (seatsHeld?: number) =>
   conflict('CAPACITY_BELOW_HELD', seatsHeld === undefined ? 'Capacity cannot be lower than the seats already held by bookings' : `Capacity cannot be lower than the ${seatsHeld} seat${seatsHeld === 1 ? '' : 's'} already held by bookings`)
 
@@ -98,7 +103,17 @@ export type DashboardSummary = {
   upcoming: Record<ProductType, { published: number; draft: number; next: { id: string; startsAt: string; productName: string; kind: 'session' | 'cohort' }[] }>
   cancelledUpcoming: number
   /** Stage 4C. No payment exists yet, so every active booking is pending payment. */
-  bookings: { pendingPayment: number; cancelled: number }
+  /**
+   * confirmedSimulated: confirmed through the development payment simulator. NOT revenue: no money was
+   * received. There is deliberately no revenue figure until a real payment provider exists.
+   */
+  bookings: {
+    pendingPayment: number; awaitingConfirmation: number
+    /** Confirmed by an administrator (not proof of payment), total and by reason. */
+    confirmedManual: { total: number; PAYMENT_ARRANGED_OFFLINE: number; COMPLIMENTARY: number; OTHER: number }
+    confirmedSimulated: number; confirmedPaid: number; cancelled: number; expired: number
+    cancellationRequests: { pending: number; approved: number; rejected: number }
+  }
 }
 
 export function createAdminRepository(prisma: PrismaClient): AdminRepository {
@@ -179,8 +194,28 @@ export function createAdminRepository(prisma: PrismaClient): AdminRepository {
         prisma.trainingCohort.count({ where: cohortWhere('CANCELLED') }),
       ])
       upcoming.ONLINE_TRAINING = { published: publishedCohorts, draft: draftCohorts, next: nextCohorts.map((row) => ({ id: row.cohortId!, startsAt: row.startsAt.toISOString(), productName: row.product.name, kind: 'cohort' as const })) }
-      const [pendingPayment, cancelledBookings] = await Promise.all([prisma.booking.count({ where: { status: 'PENDING_PAYMENT' } }), prisma.booking.count({ where: { status: 'CANCELLED' } })])
-      return { products: { active, inactive }, upcoming, cancelledUpcoming: cancelledSessions + cancelledCohorts, bookings: { pendingPayment, cancelled: cancelledBookings } }
+      const manual = (reason: 'PAYMENT_ARRANGED_OFFLINE' | 'COMPLIMENTARY' | 'OTHER') => prisma.booking.count({ where: { status: 'CONFIRMED', confirmationMethod: 'MANUAL', confirmationReason: reason } })
+      const requests = (status: 'PENDING' | 'APPROVED' | 'REJECTED') => prisma.bookingCancellationRequest.count({ where: { status } })
+      const [pendingPayment, awaitingConfirmation, offline, complimentary, other, confirmedSimulated, confirmedPaid, cancelledBookings, expiredBookings, pendingRequests, approvedRequests, rejectedRequests] = await Promise.all([
+        prisma.booking.count({ where: { status: 'PENDING_PAYMENT' } }),
+        prisma.booking.count({ where: { status: 'AWAITING_CONFIRMATION' } }),
+        manual('PAYMENT_ARRANGED_OFFLINE'), manual('COMPLIMENTARY'), manual('OTHER'),
+        prisma.booking.count({ where: { status: 'CONFIRMED', confirmationMethod: 'PAYMENT', paymentAttempts: { some: { status: 'SUCCEEDED', isSimulated: true } } } }),
+        // Always 0 in this stage (no real provider); kept separate so simulated and manual confirmations are never mixed in.
+        prisma.booking.count({ where: { status: 'CONFIRMED', confirmationMethod: 'PAYMENT', paymentAttempts: { some: { status: 'SUCCEEDED', isSimulated: false } } } }),
+        prisma.booking.count({ where: { status: 'CANCELLED' } }),
+        prisma.booking.count({ where: { status: 'CANCELLED', cancelledBy: 'SYSTEM' } }),
+        requests('PENDING'), requests('APPROVED'), requests('REJECTED'),
+      ])
+      return {
+        products: { active, inactive }, upcoming, cancelledUpcoming: cancelledSessions + cancelledCohorts,
+        bookings: {
+          pendingPayment, awaitingConfirmation,
+          confirmedManual: { total: offline + complimentary + other, PAYMENT_ARRANGED_OFFLINE: offline, COMPLIMENTARY: complimentary, OTHER: other },
+          confirmedSimulated, confirmedPaid, cancelled: cancelledBookings, expired: expiredBookings,
+          cancellationRequests: { pending: pendingRequests, approved: approvedRequests, rejected: rejectedRequests },
+        },
+      }
     },
 
     // ---- products ----
@@ -228,6 +263,9 @@ export function createAdminRepository(prisma: PrismaClient): AdminRepository {
       return write(async (tx) => {
         const before = await tx.product.findFirst({ where: { id, ...LIVE_PRODUCT }, select: PRODUCT_ADMIN_SELECT })
         if (!before) throw notFound('product')
+        if (patch.slug !== undefined && patch.slug !== before.slug && (CANONICAL_PRODUCT_SLUGS.includes(before.slug) || CANONICAL_PRODUCT_SLUGS.includes(patch.slug))) {
+          throw conflict('SLUG_LOCKED', `The slugs ${CANONICAL_PRODUCT_SLUGS.join(', ')} are fixed: the website uses them to find these offerings and their dates`)
+        }
         const { price, ...fields } = patch
         const row = await tx.product.update({
           where: { id },

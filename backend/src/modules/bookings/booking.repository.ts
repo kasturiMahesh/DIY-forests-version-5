@@ -4,6 +4,7 @@ import type { Prisma, PrismaClient } from '../../generated/prisma/client.js'
 import { isCheckViolation, isUniqueViolation, sanitizedDbError } from '../../lib/db-errors.js'
 import { HttpError } from '../../lib/http-error.js'
 import { checkSingleSession, cohortTimesAreValid } from '../admin/schedule-rules.js'
+import { auditBooking, bookingCutoff, closeOpenAttempts, confirmationDueAt, expireOverdue, lockTarget, PAYMENT_HOLD_MS, SEAT_HOLDING_STATUSES, type TargetFilter } from './booking-holds.js'
 import type { NormalizedPhone } from './phone.js'
 
 // Stage 4C bookings. One booking = one seat for one customer on exactly one target: a standalone
@@ -14,10 +15,22 @@ import type { NormalizedPhone } from './phone.js'
 // capacity changes and admin cancellations of the target are serialized on that row. The seat counters
 // themselves are changed only by the bookings_maintain_seats trigger, and the CHECK
 // "seats_held <= capacity" rejects anything that slips past the application check.
-// No payment exists: every booking starts PENDING_PAYMENT and holds its seat until cancelled.
+//
+// Revision 3: bookings close 24 hours before the start. In manual mode (BOOKING_CONFIRMATION_MODE,
+// the default) a new booking is AWAITING_CONFIRMATION with a confirmation deadline and is confirmed (or
+// declined) by an administrator; in payment mode (development + simulator only) it is PENDING_PAYMENT
+// with the Stage 2 30-minute payment deadline. Both hold a seat; overdue holds are expired by the sweep in
+// booking-holds.ts. A CONFIRMED booking can only be cancelled through an approved cancellation request
+// (cancellation-requests.ts). Bookings from before the Stage 2 hold have no deadline and never expire.
 
 type Tx = Prisma.TransactionClient
-type Status = 'PENDING_PAYMENT' | 'CANCELLED'
+type Status = 'PENDING_PAYMENT' | 'AWAITING_CONFIRMATION' | 'CONFIRMED' | 'CANCELLED'
+export type BookingConfirmationMode = 'manual' | 'payment'
+
+/** Shown with every simulated confirmation: simulated payments are not money and never revenue. */
+export const SIMULATED_CONFIRMATION_NOTICE = 'Confirmed — simulated payment, no money received.'
+/** Shown with every manual confirmation: confirmation is not proof that anything was paid. */
+export const MANUAL_CONFIRMATION_NOTICE = 'Confirmed by DIY Forests. No payment was taken through this website. Our team will explain any agreed payment arrangements separately.'
 export type Page = { page: number; pageSize: number }
 export type Paged<T> = { items: T[]; total: number }
 export type Actor = { userId: string; requestId: string | undefined }
@@ -26,6 +39,9 @@ export type CreateBookingInput = { productId: string; target: Target; contactNam
 
 const httpError = (status: number, code: string, message: string) => new HttpError(status, code, message)
 const bookingNotFound = () => httpError(404, 'BOOKING_NOT_FOUND', 'Booking not found')
+export const notCancellable = (status: Status) => status === 'CONFIRMED'
+  ? httpError(409, 'BOOKING_NOT_CANCELLABLE', 'Confirmed bookings are cancelled by request. Use “Request cancellation”; our team will review it.')
+  : httpError(409, 'BOOKING_NOT_CANCELLABLE', 'This booking has already been cancelled')
 
 // ---- reads ----
 
@@ -38,21 +54,69 @@ const TARGET_SELECT = {
     },
   },
 } as const
+export const ATTEMPT_SELECT = {
+  id: true, status: true, provider: true, isSimulated: true, amount: true, currency: true, failureReason: true, completedAt: true, createdAt: true,
+} as const
+export type AttemptRow = Prisma.PaymentAttemptGetPayload<{ select: typeof ATTEMPT_SELECT }>
+
+/** A payment attempt as shown to its customer and (read-only) to admins. Never any card or bank data: none exists. */
+export const paymentAttemptView = (row: AttemptRow) => ({
+  id: row.id,
+  status: row.status,
+  provider: row.provider,
+  simulated: row.isSimulated,
+  amount: { amount: row.amount.toFixed(2), currency: row.currency },
+  failureReason: row.failureReason,
+  completedAt: row.completedAt?.toISOString() ?? null,
+  createdAt: row.createdAt.toISOString(),
+})
+export type PaymentAttemptView = ReturnType<typeof paymentAttemptView>
+
+export const CANCELLATION_REQUEST_SELECT = {
+  id: true, status: true, requestedAt: true, refundPolicy: true, refundPercent: true, customerReason: true,
+  decidedAt: true, decisionReason: true, refundOutcome: true,
+} as const
+export type CancellationRequestRow = Prisma.BookingCancellationRequestGetPayload<{ select: typeof CANCELLATION_REQUEST_SELECT }>
+
+/** A cancellation request. The percentage is eligibility only; the outcome says what the website did. */
+export const cancellationRequestView = (row: CancellationRequestRow) => ({
+  id: row.id,
+  status: row.status,
+  requestedAt: row.requestedAt.toISOString(),
+  refundPolicy: row.refundPolicy,
+  refundPercent: row.refundPercent,
+  customerReason: row.customerReason,
+  decidedAt: row.decidedAt?.toISOString() ?? null,
+  decisionReason: row.decisionReason,
+  refundOutcome: row.refundOutcome,
+})
+export type CancellationRequestView = ReturnType<typeof cancellationRequestView>
+
 const BOOKING_SELECT = {
   id: true, reference: true, status: true, priceAmount: true, currency: true, productName: true, contactName: true,
   phoneCountry: true, phoneDialingCode: true, phoneNational: true, phoneE164: true,
   productId: true, sessionId: true, cohortId: true,
   cancelledAt: true, cancelledBy: true, cancelReason: true, createdAt: true, updatedAt: true,
+  paymentDueAt: true, confirmedAt: true, confirmationDueAt: true, confirmationMethod: true, confirmationReason: true,
   product: { select: { id: true, slug: true, type: true } },
+  // Newest first. Once an attempt succeeds the booking is CONFIRMED and no new attempt can start, so a
+  // successful attempt is always within this window.
+  paymentAttempts: { select: ATTEMPT_SELECT, orderBy: { createdAt: 'desc' as const }, take: 10 },
+  cancellationRequests: { select: CANCELLATION_REQUEST_SELECT, orderBy: { requestedAt: 'desc' as const }, take: 5 },
   ...TARGET_SELECT,
 } as const
-const ADMIN_BOOKING_SELECT = { ...BOOKING_SELECT, user: { select: { id: true, email: true, displayName: true } } } as const
+const ADMIN_BOOKING_SELECT = {
+  ...BOOKING_SELECT,
+  confirmationNote: true,
+  user: { select: { id: true, email: true, displayName: true } },
+  confirmedBy: { select: { id: true, email: true, displayName: true } },
+} as const
 
 type BookingRow = Prisma.BookingGetPayload<{ select: typeof BOOKING_SELECT }>
 type AdminBookingRow = Prisma.BookingGetPayload<{ select: typeof ADMIN_BOOKING_SELECT }>
 
 /** When the booked offering starts: the session start, or the first Friday of a cohort. */
-function targetStartsAt(row: Pick<BookingRow, 'session' | 'cohort'>): Date | null {
+export function targetStartsAt(row: Pick<BookingRow, 'session' | 'cohort'>): Date | null {
   if (row.session) return row.session.startsAt
   return row.cohort?.sessions.find((session) => session.cohortSequence === 1)?.startsAt ?? null
 }
@@ -67,8 +131,27 @@ const targetView = (row: BookingRow) =>
 
 const phoneView = (row: BookingRow) => ({ country: row.phoneCountry, dialingCode: row.phoneDialingCode, nationalNumber: row.phoneNational, e164: row.phoneE164 })
 
-/** A customer may cancel a pending booking up to the moment the offering starts. */
-const customerMayCancel = (row: BookingRow, now: Date) => row.status === 'PENDING_PAYMENT' && (targetStartsAt(row)?.getTime() ?? 0) > now.getTime()
+const startsInFuture = (row: BookingRow, now: Date) => (targetStartsAt(row)?.getTime() ?? 0) > now.getTime()
+
+/**
+ * A customer may directly cancel a pending or awaiting-confirmation booking up to the moment the
+ * offering starts. A CONFIRMED booking is cancelled only through a cancellation request.
+ */
+const customerMayCancel = (row: BookingRow, now: Date) => (row.status === 'PENDING_PAYMENT' || row.status === 'AWAITING_CONFIRMATION') && startsInFuture(row, now)
+
+/** Payment can be started while pending and inside the payment window (no deadline = grandfathered). */
+export const withinPaymentWindow = (row: { status: string; paymentDueAt: Date | null }, now: Date) =>
+  row.status === 'PENDING_PAYMENT' && (row.paymentDueAt === null || row.paymentDueAt.getTime() > now.getTime())
+
+/** Confirmation history (also kept after an approved cancellation of a confirmed booking). */
+const confirmationView = (row: BookingRow) => {
+  if (!row.confirmedAt) return null
+  if (row.confirmationMethod === 'MANUAL') {
+    return { at: row.confirmedAt.toISOString(), method: 'MANUAL' as const, simulated: false, notice: MANUAL_CONFIRMATION_NOTICE as string | null }
+  }
+  const succeeded = row.paymentAttempts.find((attempt) => attempt.status === 'SUCCEEDED')
+  return { at: row.confirmedAt.toISOString(), method: 'PAYMENT' as const, simulated: succeeded?.isSimulated ?? true, notice: succeeded?.isSimulated === false ? null : SIMULATED_CONFIRMATION_NOTICE as string | null }
+}
 
 const baseView = (row: BookingRow) => ({
   id: row.id,
@@ -79,6 +162,17 @@ const baseView = (row: BookingRow) => ({
   price: { amount: row.priceAmount.toFixed(2), currency: row.currency },
   target: targetView(row),
   cancellation: row.status === 'CANCELLED' ? { at: row.cancelledAt!.toISOString(), by: row.cancelledBy!, reason: row.cancelReason } : null,
+  payment: {
+    /** When an unpaid (payment-mode) booking expires. null = manual mode, or created before the payment hold existed. */
+    dueAt: row.paymentDueAt?.toISOString() ?? null,
+    openAttemptId: row.paymentAttempts.find((attempt) => attempt.status === 'CREATED')?.id ?? null,
+    attempts: row.paymentAttempts.map(paymentAttemptView),
+  },
+  /** Manual mode: when an unconfirmed request is released (min(booking + 48h, start − 24h)). */
+  confirmationDueAt: row.confirmationDueAt?.toISOString() ?? null,
+  confirmation: confirmationView(row),
+  /** The most recent cancellation request, if any. */
+  cancellationRequest: row.cancellationRequests[0] ? cancellationRequestView(row.cancellationRequests[0]) : null,
   createdAt: row.createdAt.toISOString(),
   updatedAt: row.updatedAt.toISOString(),
 })
@@ -87,6 +181,8 @@ export const customerBooking = (row: BookingRow, now: Date) => ({
   ...baseView(row),
   contact: { name: row.contactName, phone: phoneView(row) },
   canCancel: customerMayCancel(row, now),
+  canPay: withinPaymentWindow(row, now),
+  canRequestCancellation: row.status === 'CONFIRMED' && startsInFuture(row, now) && row.cancellationRequests[0]?.status !== 'PENDING',
 })
 
 /** Admin list rows: who and what, without the phone number (shown only on the detail view). */
@@ -94,7 +190,13 @@ export const adminBookingSummary = (row: AdminBookingRow) => ({
   ...baseView(row),
   customer: { id: row.user.id, email: row.user.email, displayName: row.user.displayName },
   contactName: row.contactName,
-  canCancel: row.status === 'PENDING_PAYMENT',
+  /** Decline (awaiting) or cancel (pending payment). Confirmed bookings go through a cancellation request. */
+  canCancel: row.status === 'PENDING_PAYMENT' || row.status === 'AWAITING_CONFIRMATION',
+  canConfirm: row.status === 'AWAITING_CONFIRMATION',
+  manualConfirmation: row.confirmationMethod === 'MANUAL'
+    ? { reason: row.confirmationReason!, note: row.confirmationNote, by: row.confirmedBy ? { id: row.confirmedBy.id, email: row.confirmedBy.email, displayName: row.confirmedBy.displayName } : null }
+    : null,
+  cancellationRequests: row.cancellationRequests.map(cancellationRequestView),
 })
 export const adminBooking = (row: AdminBookingRow) => ({ ...adminBookingSummary(row), contact: { name: row.contactName, phone: phoneView(row) } })
 
@@ -102,13 +204,22 @@ export type CustomerBooking = ReturnType<typeof customerBooking>
 export type AdminBookingSummary = ReturnType<typeof adminBookingSummary>
 export type AdminBooking = ReturnType<typeof adminBooking>
 
+/** Admin list shortcuts on top of the plain status filter. */
+export type AdminBookingView = 'AWAITING_CONFIRMATION' | 'MANUALLY_CONFIRMED' | 'SIMULATED_CONFIRMED' | 'CANCELLATION_REQUESTED'
 export type AdminBookingFilter = {
-  status?: Status | undefined; productId?: string | undefined; sessionId?: string | undefined; cohortId?: string | undefined
+  status?: Status | undefined; view?: AdminBookingView | undefined; productId?: string | undefined; sessionId?: string | undefined; cohortId?: string | undefined
   q?: string | undefined; createdFrom?: Date | undefined; createdTo?: Date | undefined
 }
 
+const VIEW_WHERE: Record<AdminBookingView, Prisma.BookingWhereInput> = {
+  AWAITING_CONFIRMATION: { status: 'AWAITING_CONFIRMATION' },
+  MANUALLY_CONFIRMED: { status: 'CONFIRMED', confirmationMethod: 'MANUAL' },
+  SIMULATED_CONFIRMED: { status: 'CONFIRMED', confirmationMethod: 'PAYMENT', paymentAttempts: { some: { status: 'SUCCEEDED', isSimulated: true } } },
+  CANCELLATION_REQUESTED: { cancellationRequests: { some: { status: 'PENDING' } } },
+}
+
 export interface BookingRepository {
-  /** Creates a PENDING_PAYMENT booking, or replays the one already created with this idempotency key. */
+  /** Creates a booking in the configured mode, or replays the one already created with this idempotency key. */
   create(userId: string, input: CreateBookingInput, context: { now: Date; requestId: string | undefined }): Promise<{ booking: CustomerBooking; replayed: boolean }>
   listForCustomer(userId: string, filter: { status?: Status | undefined }, page: Page, now: Date): Promise<Paged<CustomerBooking>>
   /** 404 for another customer's booking: existence is never revealed. */
@@ -116,7 +227,10 @@ export interface BookingRepository {
   cancelByCustomer(userId: string, id: string, reason: string | null, context: { now: Date; requestId: string | undefined }): Promise<CustomerBooking>
   listForAdmin(filter: AdminBookingFilter, page: Page): Promise<Paged<AdminBookingSummary>>
   getForAdmin(id: string): Promise<AdminBooking>
+  /** Cancels a pending booking, or declines a booking awaiting confirmation. */
   cancelByAdmin(id: string, reason: string, actor: Actor, now: Date): Promise<AdminBooking>
+  /** Expires overdue unpaid / unconfirmed holds (all, or one target's) and returns how many this call expired. */
+  expireOverdue(now: Date, target?: TargetFilter): Promise<number>
 }
 
 // Unambiguous characters (no 0/O, 1/I/L) for references people read out over the phone.
@@ -145,7 +259,12 @@ function rethrow(error: unknown): never {
   throw sanitizedDbError(error)
 }
 
-export function createBookingRepository(prisma: PrismaClient): BookingRepository {
+export type BookingRepositoryOptions = {
+  /** env.bookingConfirmationMode (manual by default; payment only in development with the simulator). Tests pass it explicitly. */
+  confirmationMode: BookingConfirmationMode
+}
+
+export function createBookingRepository(prisma: PrismaClient, { confirmationMode }: BookingRepositoryOptions): BookingRepository {
   let utcChecked: Promise<void> | null = null
   const ready = () => {
     utcChecked ??= assertUtcSession(prisma).catch((error: unknown) => {
@@ -155,8 +274,7 @@ export function createBookingRepository(prisma: PrismaClient): BookingRepository
     return utcChecked
   }
 
-  const audit = (tx: Tx, input: { actorUserId: string; actorLabel: 'self' | 'admin'; action: string; bookingId: string; requestId: string | undefined; details: Prisma.InputJsonValue }) =>
-    tx.auditEvent.create({ data: { actorUserId: input.actorUserId, actorLabel: input.actorLabel, action: input.action, targetType: 'booking', targetId: input.bookingId, requestId: input.requestId ?? null, details: input.details } })
+  const audit = auditBooking
 
   const findByKey = (userId: string, idempotencyKey: string) =>
     prisma.booking.findUnique({ where: { userId_idempotencyKey: { userId, idempotencyKey } }, select: BOOKING_SELECT })
@@ -164,7 +282,9 @@ export function createBookingRepository(prisma: PrismaClient): BookingRepository
   /** A retry with the same key must describe the same booking; otherwise the key was reused by mistake. */
   function replay(existing: BookingRow, input: CreateBookingInput, now: Date) {
     const sameTarget = input.target.kind === 'session' ? existing.sessionId === input.target.id : existing.cohortId === input.target.id
-    const same = existing.productId === input.productId && sameTarget && existing.contactName === input.contactName && existing.phoneE164 === input.phone.e164
+    // The country is compared too: US and CA share +1, so the same E.164 number can describe two requests.
+    const same = existing.productId === input.productId && sameTarget && existing.contactName === input.contactName
+      && existing.phoneCountry === input.phone.country && existing.phoneE164 === input.phone.e164
     if (!same) throw httpError(409, 'IDEMPOTENCY_KEY_REUSED', 'This request key was already used for a different booking. Start a new checkout.')
     return { booking: customerBooking(existing, now), replayed: true }
   }
@@ -195,6 +315,7 @@ export function createBookingRepository(prisma: PrismaClient): BookingRepository
 
     let capacity: number | null
     let seatsHeld: number
+    let start: Date
     if (input.target.kind === 'session') {
       const session = await tx.session.findUnique({ where: { id: input.target.id }, select: { productId: true, cohortId: true, status: true, startsAt: true, endsAt: true, venue: true, capacity: true, seatsHeld: true } })
       if (!session) throw httpError(404, 'SESSION_NOT_FOUND', 'Session not found')
@@ -209,6 +330,7 @@ export function createBookingRepository(prisma: PrismaClient): BookingRepository
         throw httpError(409, 'TARGET_NOT_BOOKABLE', 'This session is missing its schedule details and cannot be booked yet')
       }
       ;({ capacity, seatsHeld } = session)
+      start = session.startsAt
     } else {
       const cohort = await tx.trainingCohort.findUnique({
         where: { id: input.target.id },
@@ -223,32 +345,47 @@ export function createBookingRepository(prisma: PrismaClient): BookingRepository
       if (!cohortTimesAreValid(cohort.sessions, cohort.timezone)) throw httpError(409, 'TARGET_NOT_BOOKABLE', 'These training dates are incomplete and cannot be booked')
       if (cohort.sessions.some((session) => session.startsAt.getTime() <= now.getTime())) throw httpError(409, 'TARGET_STARTED', 'This training has already started')
       ;({ capacity, seatsHeld } = cohort)
+      start = cohort.sessions.find((session) => session.cohortSequence === 1)!.startsAt
+    }
+    // Revision 3, both modes: bookings close 24 hours before the start (the database checks it too).
+    if (now.getTime() >= bookingCutoff(start).getTime()) {
+      throw httpError(409, 'BOOKING_CUTOFF_PASSED', 'Bookings close 24 hours before the start time. Please contact us if you’d like to join.')
     }
 
     // Checked before capacity: a customer who already holds one of the seats should be told so.
     const active = await tx.booking.findFirst({
-      where: { userId, status: 'PENDING_PAYMENT', ...(input.target.kind === 'session' ? { sessionId: input.target.id } : { cohortId: input.target.id }) },
+      where: { userId, status: { in: [...SEAT_HOLDING_STATUSES] }, ...(input.target.kind === 'session' ? { sessionId: input.target.id } : { cohortId: input.target.id }) },
       select: { id: true },
     })
     if (active) throw httpError(409, 'ALREADY_BOOKED', 'You already have an active booking for these dates')
     if (capacity !== null && seatsHeld >= capacity) throw httpError(409, 'SOLD_OUT', 'These dates are fully booked')
 
+    // Manual mode: held until staff confirm or the confirmation deadline passes. Payment mode (development
+    // simulator only): the Stage 2 30-minute payment hold (CHECK: exactly created_at + 30 minutes).
+    const hold = confirmationMode === 'manual'
+      ? { status: 'AWAITING_CONFIRMATION' as const, confirmationDueAt: confirmationDueAt(now, start) }
+      : { status: 'PENDING_PAYMENT' as const, paymentDueAt: new Date(now.getTime() + PAYMENT_HOLD_MS) }
     const created = await tx.booking.create({
       data: {
         reference, userId, productId: product.id,
         ...(input.target.kind === 'session' ? { sessionId: input.target.id } : { cohortId: input.target.id }),
-        status: 'PENDING_PAYMENT',
+        ...hold,
         // Price snapshot exactly as configured by the admin: no tax is added here.
         priceAmount: product.priceAmount, currency: product.currency, productName: product.name,
         contactName: input.contactName,
         phoneCountry: input.phone.country, phoneDialingCode: input.phone.dialingCode, phoneNational: input.phone.national, phoneE164: input.phone.e164,
         idempotencyKey: input.idempotencyKey,
+        createdAt: now,
       },
       select: { id: true, reference: true },
     })
     await audit(tx, {
       actorUserId: userId, actorLabel: 'self', action: 'BOOKING_CREATED', bookingId: created.id, requestId,
-      details: { reference: created.reference, productId: product.id, target: input.target, price: { amount: product.priceAmount.toFixed(2), currency: product.currency } },
+      details: {
+        reference: created.reference, productId: product.id, target: input.target, price: { amount: product.priceAmount.toFixed(2), currency: product.currency },
+        mode: confirmationMode,
+        ...('confirmationDueAt' in hold ? { confirmationDueAt: hold.confirmationDueAt.toISOString() } : { paymentDueAt: hold.paymentDueAt.toISOString() }),
+      },
     })
     return { id: created.id, replayed: false }
   }
@@ -260,16 +397,23 @@ export function createBookingRepository(prisma: PrismaClient): BookingRepository
   }
 
   /**
-   * Conditional status change: only a still-PENDING_PAYMENT row is updated, so two concurrent
-   * cancellations cannot both succeed (the loser re-checks the row after the winner commits).
-   * The trigger releases the seat in the same transaction. The target row is locked FIRST, the same
-   * order as creating a booking (target, then booking row), so the two can never wait on each other.
+   * Conditional status change: only a still pending or awaiting-confirmation row is updated, so two
+   * concurrent cancellations (or a cancellation and a payment, confirmation or expiry) cannot both
+   * succeed: the loser re-checks the row after the winner commits. The trigger releases the seat in the
+   * same transaction, and the booking's open payment attempt (if any) is cancelled with it. The target
+   * row is locked FIRST, the same order as every other booking write, so none of them can deadlock.
    */
-  async function cancel(tx: Tx, booking: { id: string; sessionId: string | null; cohortId: string | null }, where: Prisma.BookingWhereInput, by: 'CUSTOMER' | 'ADMIN', reason: string | null, now: Date) {
-    if (booking.sessionId) await tx.$queryRaw`SELECT 1 FROM "sessions" WHERE "id" = ${booking.sessionId}::uuid FOR UPDATE`
-    else if (booking.cohortId) await tx.$queryRaw`SELECT 1 FROM "training_cohorts" WHERE "id" = ${booking.cohortId}::uuid FOR UPDATE`
-    const result = await tx.booking.updateMany({ where: { ...where, id: booking.id, status: 'PENDING_PAYMENT' }, data: { status: 'CANCELLED', cancelledAt: now, cancelledBy: by, cancelReason: reason } })
-    if (result.count !== 1) throw httpError(409, 'BOOKING_NOT_CANCELLABLE', 'This booking has already been cancelled')
+  async function cancel(tx: Tx, booking: { id: string; reference: string; sessionId: string | null; cohortId: string | null }, where: Prisma.BookingWhereInput, by: 'CUSTOMER' | 'ADMIN', reason: string | null, now: Date, actor: { actorUserId: string; actorLabel: 'self' | 'admin'; requestId: string | undefined }) {
+    await lockTarget(tx, booking)
+    const result = await tx.booking.updateMany({
+      where: { ...where, id: booking.id, status: { in: ['PENDING_PAYMENT', 'AWAITING_CONFIRMATION'] } },
+      data: { status: 'CANCELLED', cancelledAt: now, cancelledBy: by, cancelReason: reason },
+    })
+    if (result.count !== 1) {
+      const current = await tx.booking.findUnique({ where: { id: booking.id }, select: { status: true } })
+      throw notCancellable(current?.status ?? 'CANCELLED')
+    }
+    await closeOpenAttempts(tx, booking, now, 'Booking cancelled', actor)
   }
 
   async function getForAdmin(id: string) {
@@ -284,6 +428,9 @@ export function createBookingRepository(prisma: PrismaClient): BookingRepository
       await ready()
       const existing = await findByKey(userId, input.idempotencyKey)
       if (existing) return replay(existing, input, now)
+      // Release this target's overdue holds first (separate short transactions), so stale unpaid or
+      // unconfirmed bookings can never make these dates look full.
+      await expireOverdue(prisma, now, { target: input.target.kind === 'session' ? { sessionId: input.target.id } : { cohortId: input.target.id } })
 
       for (let attempt = 1; ; attempt++) {
         try {
@@ -328,9 +475,9 @@ export function createBookingRepository(prisma: PrismaClient): BookingRepository
         await prisma.$transaction(async (tx) => {
           const row = await tx.booking.findFirst({ where: { id, userId }, select: BOOKING_SELECT })
           if (!row) throw bookingNotFound()
-          if (row.status !== 'PENDING_PAYMENT') throw httpError(409, 'BOOKING_NOT_CANCELLABLE', 'This booking has already been cancelled')
+          if (row.status !== 'PENDING_PAYMENT' && row.status !== 'AWAITING_CONFIRMATION') throw notCancellable(row.status)
           if (!customerMayCancel(row, now)) throw httpError(409, 'BOOKING_NOT_CANCELLABLE', 'This booking can no longer be cancelled online because the dates have started. Please contact us.')
-          await cancel(tx, row, { userId }, 'CUSTOMER', reason, now)
+          await cancel(tx, row, { userId }, 'CUSTOMER', reason, now, { actorUserId: userId, actorLabel: 'self', requestId })
           await audit(tx, { actorUserId: userId, actorLabel: 'self', action: 'BOOKING_CANCELLED', bookingId: id, requestId, details: { reference: row.reference, by: 'CUSTOMER', ...(reason ? { reason } : {}) } })
         })
       } catch (error) {
@@ -339,13 +486,16 @@ export function createBookingRepository(prisma: PrismaClient): BookingRepository
       return customerBooking(await getRow({ id, userId }), now)
     },
 
-    async listForAdmin({ status, productId, sessionId, cohortId, q, createdFrom, createdTo }, { page, pageSize }) {
+    async listForAdmin({ status, view, productId, sessionId, cohortId, q, createdFrom, createdTo }, { page, pageSize }) {
       await ready()
       const search = q?.trim()
       const where: Prisma.BookingWhereInput = {
-        ...(status ? { status } : {}), ...(productId ? { productId } : {}), ...(sessionId ? { sessionId } : {}), ...(cohortId ? { cohortId } : {}),
-        ...(createdFrom || createdTo ? { createdAt: { ...(createdFrom ? { gte: createdFrom } : {}), ...(createdTo ? { lt: createdTo } : {}) } } : {}),
-        ...(search ? { OR: [{ reference: search.toUpperCase() }, { user: { email: { contains: search.toLowerCase() } } }] } : {}),
+        AND: [
+          { ...(status ? { status } : {}), ...(productId ? { productId } : {}), ...(sessionId ? { sessionId } : {}), ...(cohortId ? { cohortId } : {}) },
+          view ? VIEW_WHERE[view] : {},
+          createdFrom || createdTo ? { createdAt: { ...(createdFrom ? { gte: createdFrom } : {}), ...(createdTo ? { lt: createdTo } : {}) } } : {},
+          search ? { OR: [{ reference: search.toUpperCase() }, { user: { email: { contains: search.toLowerCase() } } }] } : {},
+        ],
       }
       try {
         const [rows, total] = await Promise.all([
@@ -366,14 +516,22 @@ export function createBookingRepository(prisma: PrismaClient): BookingRepository
         await prisma.$transaction(async (tx) => {
           const row = await tx.booking.findUnique({ where: { id }, select: { id: true, reference: true, status: true, sessionId: true, cohortId: true } })
           if (!row) throw bookingNotFound()
-          if (row.status !== 'PENDING_PAYMENT') throw httpError(409, 'BOOKING_NOT_CANCELLABLE', 'This booking has already been cancelled')
-          await cancel(tx, row, {}, 'ADMIN', reason, now)
-          await audit(tx, { actorUserId: actor.userId, actorLabel: 'admin', action: 'BOOKING_CANCELLED', bookingId: id, requestId: actor.requestId, details: { reference: row.reference, by: 'ADMIN', reason } })
+          if (row.status !== 'PENDING_PAYMENT' && row.status !== 'AWAITING_CONFIRMATION') throw notCancellable(row.status)
+          await cancel(tx, row, {}, 'ADMIN', reason, now, { actorUserId: actor.userId, actorLabel: 'admin', requestId: actor.requestId })
+          await audit(tx, {
+            actorUserId: actor.userId, actorLabel: 'admin', action: 'BOOKING_CANCELLED', bookingId: id, requestId: actor.requestId,
+            details: { reference: row.reference, by: 'ADMIN', reason, ...(row.status === 'AWAITING_CONFIRMATION' ? { kind: 'DECLINED' } : {}) },
+          })
         })
       } catch (error) {
         rethrow(error)
       }
       return getForAdmin(id)
+    },
+
+    async expireOverdue(now, target) {
+      await ready()
+      return expireOverdue(prisma, now, target ? { target } : {})
     },
   }
 }
